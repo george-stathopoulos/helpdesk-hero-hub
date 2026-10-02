@@ -297,6 +297,21 @@ export default function Inbox( { go } ) {
 											}
 										>
 											<td>
+												{ t.unread && (
+													<span
+														className={ `hdh-unread is-${ t.unread }` }
+													>
+														{ t.unread === 'reply'
+															? __(
+																	'Customer replied',
+																	'helpdesk-hero-hub'
+															  )
+															: __(
+																	'New',
+																	'helpdesk-hero-hub'
+															  ) }
+													</span>
+												) }
 												<a
 													className="hdh-strong-link"
 													href={ `#/ticket/${ t.id }` }

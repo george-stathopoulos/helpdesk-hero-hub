@@ -34,6 +34,7 @@ final class Helpdesk_Hero_Hub_Admin_REST {
 		};
 		$routes = array(
 			array( '/admin/tickets', 'GET', 'tickets', $agent ),
+			array( '/admin/unread', 'GET', 'unread', $agent ),
 			array( '/admin/tickets/(?P<id>\d+)', 'GET', 'ticket', $agent ),
 			array( '/admin/tickets/(?P<id>\d+)/reply', 'POST', 'reply', $support ),
 			array( '/admin/tickets/(?P<id>\d+)/status', 'POST', 'status', $support ),
@@ -147,6 +148,7 @@ final class Helpdesk_Hero_Hub_Admin_REST {
 				'access_expires' => self::iso( $t['access_expires'] ),
 				'reference'      => $t['helpdesk_number'] ? ucfirst( $t['helpdesk'] ) . ' #' . $t['helpdesk_number'] : '',
 				'channel'        => $t['channel'],
+				'unread'         => Helpdesk_Hero_Hub::unread( $t ),
 				'category'       => $t['category'],
 				'tags'           => Helpdesk_Hero_Hub_Tags::resolve( $t['tags'] ),
 				'rating'         => (int) $t['rating'],
@@ -183,6 +185,9 @@ final class Helpdesk_Hero_Hub_Admin_REST {
 		$t = self::find( $request );
 		if ( is_wp_error( $t ) ) {
 			return $t;
+		}
+		if ( 'GET' === $request->get_method() ) {
+			Helpdesk_Hero_Hub::mark_viewed( (int) $t['id'] );
 		}
 		$site     = Helpdesk_Hero_Hub::site( (int) $t['site_id'] );
 		$helpdesk = Helpdesk_Hero_Hub_Helpdesk::for_ticket( $t );
@@ -896,5 +901,18 @@ final class Helpdesk_Hero_Hub_Admin_REST {
 	 */
 	public static function restore( WP_REST_Request $request ) {
 		return Helpdesk_Hero_Hub_Backup::import( $request->get_param( 'backup' ) );
+	}
+
+	/**
+	 * Unread tickets, for the badge and live notices in the hub.
+	 *
+	 * @return array
+	 */
+	public static function unread() {
+		$u = Helpdesk_Hero_Hub::unread_tickets( 5 );
+		foreach ( $u['latest'] as &$t ) {
+			$t['at'] = self::iso( $t['at'] );
+		}
+		return $u;
 	}
 }

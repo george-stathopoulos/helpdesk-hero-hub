@@ -34,6 +34,100 @@ final class Helpdesk_Hero_Hub_Admin {
 		add_filter( 'admin_body_class', array( __CLASS__, 'body_class' ) );
 		add_action( 'admin_init', array( __CLASS__, 'activation_redirect' ) );
 		add_filter( 'plugin_action_links_' . plugin_basename( HELPDESK_HERO_HUB_FILE ), array( __CLASS__, 'action_links' ) );
+		add_action( 'admin_bar_menu', array( __CLASS__, 'admin_bar' ), 80 );
+		add_action( 'admin_notices', array( __CLASS__, 'new_tickets_notice' ) );
+		add_action( 'admin_post_helpdesk_hero_hub_dismiss', array( __CLASS__, 'dismiss_notice' ) );
+	}
+
+	/**
+	 * Unread tickets, once per request.
+	 *
+	 * @return array{count:int, latest:array[]}
+	 */
+	private static function unread() {
+		static $unread = null;
+		if ( null === $unread ) {
+			$unread = get_option( Helpdesk_Hero_Hub_DB::OPTION ) === Helpdesk_Hero_Hub_DB::VERSION ? Helpdesk_Hero_Hub::unread_tickets( 3 ) : array(
+				'count'  => 0,
+				'latest' => array(),
+			);
+		}
+		return $unread;
+	}
+
+	/**
+	 * "Support Hub" in the admin bar, with the number of unread tickets.
+	 *
+	 * @param WP_Admin_Bar $bar Bar.
+	 */
+	public static function admin_bar( $bar ) {
+		if ( ! current_user_can( 'helpdesk_hero_hub' ) ) {
+			return;
+		}
+		$count = self::unread()['count'];
+		if ( ! $count ) {
+			return;
+		}
+		$bar->add_node(
+			array(
+				'id'    => 'helpdesk-hero-hub',
+				'title' => '<span class="ab-icon dashicons dashicons-sos" style="top:2px"></span><span class="ab-label">' . esc_html(
+					/* translators: %d: number of tickets */
+					sprintf( _n( '%d new ticket', '%d new tickets', $count, 'helpdesk-hero-hub' ), $count )
+				) . '</span>',
+				'href'  => admin_url( 'admin.php?page=' . self::SLUG . '#/inbox' ),
+			)
+		);
+	}
+
+	/**
+	 * On other admin screens: a customer opened a ticket or replied. Dismissed until the next one.
+	 */
+	public static function new_tickets_notice() {
+		if ( ! current_user_can( 'helpdesk_hero_hub' ) ) {
+			return;
+		}
+		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+		if ( $screen && self::$hook && $screen->id === self::$hook ) {
+			return;
+		}
+		$unread = self::unread();
+		if ( ! $unread['count'] || (string) get_user_meta( get_current_user_id(), 'helpdesk_hero_hub_notice_seen', true ) >= (string) $unread['latest'][0]['at'] ) {
+			return;
+		}
+		$t = $unread['latest'][0];
+		echo '<div class="notice notice-info"><p><strong>';
+		if ( 1 === $unread['count'] ) {
+			echo esc_html(
+				'reply' === $t['kind']
+					/* translators: 1: customer site, 2: ticket subject */
+					? sprintf( __( '%1$s replied to “%2$s”', 'helpdesk-hero-hub' ), $t['site'], $t['subject'] )
+					/* translators: 1: customer site, 2: ticket subject */
+					: sprintf( __( 'New ticket from %1$s: “%2$s”', 'helpdesk-hero-hub' ), $t['site'], $t['subject'] )
+			);
+		} else {
+			echo esc_html(
+				/* translators: 1: number of tickets, 2: customer site of the newest one */
+				sprintf( _n( '%1$d ticket needs a look, the newest from %2$s.', '%1$d tickets need a look, the newest from %2$s.', $unread['count'], 'helpdesk-hero-hub' ), $unread['count'], $t['site'] )
+			);
+		}
+		echo '</strong> ';
+		$open = 1 === $unread['count'] ? '#/ticket/' . (int) $t['id'] : '#/inbox';
+		echo '<a class="button button-primary button-small" href="' . esc_url( admin_url( 'admin.php?page=' . self::SLUG . $open ) ) . '">' . esc_html( 1 === $unread['count'] ? __( 'Open the ticket', 'helpdesk-hero-hub' ) : __( 'Open the inbox', 'helpdesk-hero-hub' ) ) . '</a> ';
+		echo '<a href="' . esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=helpdesk_hero_hub_dismiss&until=' . rawurlencode( $t['at'] ) ), 'helpdesk_hero_hub_dismiss' ) ) . '">' . esc_html__( 'Dismiss', 'helpdesk-hero-hub' ) . '</a>';
+		echo '</p></div>';
+	}
+
+	/**
+	 * Hide the new-ticket notice until another ticket or reply arrives.
+	 */
+	public static function dismiss_notice() {
+		check_admin_referer( 'helpdesk_hero_hub_dismiss' );
+		if ( current_user_can( 'helpdesk_hero_hub' ) && isset( $_GET['until'] ) ) {
+			update_user_meta( get_current_user_id(), 'helpdesk_hero_hub_notice_seen', sanitize_text_field( wp_unslash( $_GET['until'] ) ) );
+		}
+		wp_safe_redirect( wp_get_referer() ? wp_get_referer() : admin_url() );
+		exit;
 	}
 
 	/**
@@ -57,9 +151,11 @@ final class Helpdesk_Hero_Hub_Admin {
 	 * Top-level menu.
 	 */
 	public static function menu() {
+		$count      = current_user_can( 'helpdesk_hero_hub' ) ? self::unread()['count'] : 0;
+		$badge      = $count ? ' <span class="awaiting-mod count-' . (int) $count . '"><span class="pending-count">' . (int) $count . '</span></span>' : '';
 		self::$hook = add_menu_page(
 			__( 'Support Hub', 'helpdesk-hero-hub' ),
-			__( 'Support Hub', 'helpdesk-hero-hub' ),
+			__( 'Support Hub', 'helpdesk-hero-hub' ) . $badge,
 			'helpdesk_hero_hub',
 			self::SLUG,
 			array( __CLASS__, 'render' ),

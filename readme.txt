@@ -44,6 +44,7 @@ Save policies as **templates** (Standard, Hands-off, Strict and Full service to 
 * **Overview** statistics: tickets per day, categories, recurring issues across all your customers, and response times.
 * Ask for more time, send a message to the customer's dashboard (with a button such as "Update plugins"), see what your team did on the site.
 * Sites list with versions, last contact, connection checks and bulk policy changes.
+* **New ticket notices** in WordPress: a count on the menu and admin bar, and a notice when a customer opens a ticket or replies.
 * Tickets customers email themselves still reach the hub, with their diagnostics, once they confirm they sent them.
 * New tickets and replies are emailed to your team.
 * **Backup and restore:** download the whole hub (settings, policies, sites with their connection keys, tickets and history) as one file, and restore it after a reinstall or a move. Sites reconnect on their own.
@@ -105,5 +106,6 @@ Their sites can no longer send tickets to you, and you can no longer log in. The
 * Setup guide, and an invitation to share feedback and ideas.
 * Export and erase personal data with WordPress's privacy tools.
 * Backup and restore of the whole hub.
+* New ticket notices: a count on the Support Hub menu and admin bar, a notice on other dashboard screens, New and Customer replied labels in the Inbox, and live updates while the hub is open.
 * Confirmations open in the dashboard (no browser pop-ups), so they work everywhere, including WordPress Playground.
 * Policy templates and site policies open in a wide editor.

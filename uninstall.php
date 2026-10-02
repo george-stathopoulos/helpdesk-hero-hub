@@ -16,4 +16,5 @@ foreach ( array( 'helpdesk_hero_hub_settings', 'helpdesk_hero_hub_secrets', 'hel
 	delete_option( $helpdesk_hero_hub_option );
 }
 delete_metadata( 'user', 0, 'helpdesk_hero_hub_feedback', '', true );
+delete_metadata( 'user', 0, 'helpdesk_hero_hub_notice_seen', '', true );
 wp_clear_scheduled_hook( 'helpdesk_hero_hub_sync' );

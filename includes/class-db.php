@@ -12,7 +12,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Helpdesk_Hero_Hub_DB {
 
-	const VERSION = '2';
+	const VERSION = '3';
 	const OPTION  = 'helpdesk_hero_hub_db';
 
 	/**
@@ -90,6 +90,8 @@ final class Helpdesk_Hero_Hub_DB {
 			rated_at datetime NULL,
 			first_response_at datetime NULL,
 			closed_at datetime NULL,
+			customer_at datetime NULL,
+			viewed_at datetime NULL,
 			created_at datetime NOT NULL,
 			updated_at datetime NOT NULL,
 			synced_at datetime NULL,

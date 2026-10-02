@@ -26,7 +26,7 @@ final class Helpdesk_Hero_Hub_Backup {
 	public static function columns() {
 		return array(
 			'sites'   => array( 'id', 'label', 'name', 'url', 'endpoint', 'contact_email', 'secret', 'status', 'invite_hash', 'invite_expires', 'policy', 'info', 'created_at', 'last_seen' ),
-			'tickets' => array( 'id', 'site_id', 'client_ticket_id', 'subject', 'status', 'priority', 'category', 'customer_name', 'customer_email', 'description', 'diagnostics', 'flags', 'helpdesk', 'helpdesk_id', 'helpdesk_number', 'seen_threads', 'access_expires', 'channel', 'tags', 'rating', 'rating_comment', 'rated_at', 'first_response_at', 'closed_at', 'created_at', 'updated_at', 'synced_at' ),
+			'tickets' => array( 'id', 'site_id', 'client_ticket_id', 'subject', 'status', 'priority', 'category', 'customer_name', 'customer_email', 'description', 'diagnostics', 'flags', 'helpdesk', 'helpdesk_id', 'helpdesk_number', 'seen_threads', 'access_expires', 'channel', 'tags', 'rating', 'rating_comment', 'rated_at', 'first_response_at', 'closed_at', 'customer_at', 'viewed_at', 'created_at', 'updated_at', 'synced_at' ),
 			'outbox'  => array( 'id', 'site_id', 'hub_ticket_id', 'type', 'payload', 'created_by', 'created_at' ),
 		);
 	}

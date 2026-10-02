@@ -136,7 +136,7 @@ final class Helpdesk_Hero_Hub {
 	public static function pair( $token, array $info ) {
 		global $wpdb;
 		$table = Helpdesk_Hero_Hub_DB::table( 'sites' );
-		$site  = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM %i WHERE invite_hash = %s AND status = %s", $table, hash( 'sha256', (string) $token ), 'pending' ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$site  = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM %i WHERE invite_hash = %s AND status = %s", $table, hash( 'sha256', (string) $token ), 'pending' ), ARRAY_A ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		if ( ! $site || strtotime( $site['invite_expires'] . ' UTC' ) < time() ) {
 			return new WP_Error( 'helpdesk_hero_invite', __( 'This connection code is not valid or has expired. Ask your support team for a new one.', 'helpdesk-hero-hub' ), array( 'status' => 403 ) );
 		}
@@ -278,6 +278,64 @@ final class Helpdesk_Hero_Hub {
 	}
 
 	/**
+	 * Whether a ticket is waiting for the team to look at it: the customer opened it, or replied,
+	 * since anyone on the team last opened it in the hub.
+	 *
+	 * @param array $ticket Ticket row.
+	 * @return string '' | new | reply
+	 */
+	public static function unread( array $ticket ) {
+		if ( empty( $ticket['customer_at'] ) || 'closed' === $ticket['status'] ) {
+			return '';
+		}
+		if ( empty( $ticket['viewed_at'] ) ) {
+			return 'new';
+		}
+		return strcmp( (string) $ticket['customer_at'], (string) $ticket['viewed_at'] ) > 0 ? 'reply' : '';
+	}
+
+	/**
+	 * Unread tickets, newest first.
+	 *
+	 * @param int $limit Limit.
+	 * @return array{count:int, latest:array[]}
+	 */
+	public static function unread_tickets( $limit = 5 ) {
+		global $wpdb;
+		$where = "status <> 'closed' AND customer_at IS NOT NULL AND ( viewed_at IS NULL OR viewed_at < customer_at )";
+		$table = Helpdesk_Hero_Hub_DB::table( 'tickets' );
+		// $where is a fixed string; the table name goes through %i.
+		$count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE $where", $table ) ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$joined = "t.status <> 'closed' AND t.customer_at IS NOT NULL AND ( t.viewed_at IS NULL OR t.viewed_at < t.customer_at )";
+		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT t.id, t.subject, t.status, t.customer_at, t.viewed_at, t.customer_name, s.label AS site_name FROM %i t LEFT JOIN %i s ON s.id = t.site_id WHERE $joined ORDER BY t.customer_at DESC LIMIT %d", $table, Helpdesk_Hero_Hub_DB::table( 'sites' ), (int) $limit ), ARRAY_A ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$latest = array();
+		foreach ( $rows as $r ) {
+			$latest[] = array(
+				'id'       => (int) $r['id'],
+				'subject'  => $r['subject'],
+				'site'     => (string) $r['site_name'],
+				'customer' => (string) $r['customer_name'],
+				'kind'     => self::unread( $r + array( 'status' => $r['status'] ) ),
+				'at'       => $r['customer_at'],
+			);
+		}
+		return array(
+			'count'  => $count,
+			'latest' => $latest,
+		);
+	}
+
+	/**
+	 * Someone on the team opened a ticket.
+	 *
+	 * @param int $id Ticket.
+	 */
+	public static function mark_viewed( $id ) {
+		global $wpdb;
+		$wpdb->update( Helpdesk_Hero_Hub_DB::table( 'tickets' ), array( 'viewed_at' => Helpdesk_Hero_Hub_DB::now() ), array( 'id' => (int) $id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+	}
+
+	/**
 	 * Decode JSON columns.
 	 *
 	 * @param array $row Row.
@@ -319,7 +377,7 @@ final class Helpdesk_Hero_Hub {
 		}
 		$params[] = (int) ( $args['limit'] ?? 100 );
 		$params   = array_merge( array( Helpdesk_Hero_Hub_DB::table( 'tickets' ), Helpdesk_Hero_Hub_DB::table( 'sites' ) ), $params );
-		$sql      = 'SELECT t.id, t.site_id, t.subject, t.status, t.priority, t.customer_name, t.customer_email, t.flags, t.helpdesk, t.helpdesk_id, t.helpdesk_number, t.access_expires, t.channel, t.tags, t.rating, t.category, t.created_at, t.updated_at, s.name AS site_name, s.url AS site_url FROM %i t LEFT JOIN %i s ON s.id = t.site_id WHERE ' . implode( ' AND ', $where ) . ' ORDER BY t.updated_at DESC LIMIT %d';
+		$sql      = 'SELECT t.id, t.site_id, t.subject, t.status, t.priority, t.customer_name, t.customer_email, t.flags, t.helpdesk, t.helpdesk_id, t.helpdesk_number, t.access_expires, t.channel, t.tags, t.rating, t.category, t.customer_at, t.viewed_at, t.created_at, t.updated_at, s.name AS site_name, s.url AS site_url FROM %i t LEFT JOIN %i s ON s.id = t.site_id WHERE ' . implode( ' AND ', $where ) . ' ORDER BY t.updated_at DESC LIMIT %d';
 		// $sql is built only from fixed strings and placeholders; every value goes through prepare(), the table name through %i.
 		$rows     = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		foreach ( $rows as &$row ) {
@@ -382,6 +440,7 @@ final class Helpdesk_Hero_Hub {
 				'flags'            => wp_json_encode( self::clean_flags( (array) ( $payload['flags'] ?? array() ) ) ),
 				'access_expires'   => ! empty( $access['active'] ) && ! empty( $access['expires_at'] ) ? sanitize_text_field( $access['expires_at'] ) : null,
 				'channel'          => $channel,
+				'customer_at'      => $now,
 				'created_at'       => $now,
 				'updated_at'       => $now,
 			)
@@ -592,7 +651,13 @@ final class Helpdesk_Hero_Hub {
 			$site = self::site( (int) $ticket['site_id'] );
 			self::notify_team( array_merge( $ticket, array( 'description' => $body ) ), $site ? $site : array( 'name' => '', 'url' => '' ) );
 		}
-		self::update_ticket( (int) $ticket['id'], array( 'status' => 'open' === $status ? 'open' : $status ) );
+		self::update_ticket(
+			(int) $ticket['id'],
+			array(
+				'status'      => 'open' === $status ? 'open' : $status,
+				'customer_at' => Helpdesk_Hero_Hub_DB::now(),
+			)
+		);
 		return true;
 	}
 
@@ -964,10 +1029,10 @@ final class Helpdesk_Hero_Hub {
 		}
 		$table = Helpdesk_Hero_Hub_DB::table( 'tickets' );
 		if ( $only_ticket ) {
-			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE id = %d AND helpdesk_id <> ''", $table, $only_ticket ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE id = %d AND helpdesk_id <> ''", $table, $only_ticket ), ARRAY_A ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		} else {
 			// Open tickets, plus closed ones touched in the last 3 days (they may be reopened).
-			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE helpdesk_id <> '' AND (status <> 'closed' OR updated_at > %s) ORDER BY synced_at ASC LIMIT 40", $table, Helpdesk_Hero_Hub_DB::now( -3 * DAY_IN_SECONDS ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE helpdesk_id <> '' AND (status <> 'closed' OR updated_at > %s) ORDER BY synced_at ASC LIMIT 40", $table, Helpdesk_Hero_Hub_DB::now( -3 * DAY_IN_SECONDS ) ), ARRAY_A ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		}
 		$relayed = 0;
 		foreach ( $rows as $row ) {

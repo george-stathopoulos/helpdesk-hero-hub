@@ -1,9 +1,10 @@
 import { __, sprintf } from '@wordpress/i18n';
 import { applyFilters } from '@wordpress/hooks';
-import { useEffect, useMemo } from '@wordpress/element';
+import { useEffect, useMemo, useState } from '@wordpress/element';
 import { useRoute, useTheme } from './ui/lib/hooks';
 import { ToastProvider } from './ui/components/ui';
 import Icon from './ui/components/Icon';
+import LiveUnread from './components/LiveUnread';
 import Overview from './pages/Overview';
 import Inbox from './pages/Inbox';
 import Ticket from './pages/Ticket';
@@ -79,6 +80,7 @@ const THEMES = [
 export default function App() {
 	const [ route, go ] = useRoute( 'overview' );
 	const [ theme, setTheme ] = useTheme();
+	const [ unread, setUnread ] = useState( 0 );
 	/**
 	 * Filters the hub pages. Add-ons append (or replace by id) `{ id, label, icon, Page, admin }`.
 	 */
@@ -120,6 +122,7 @@ export default function App() {
 			data-theme={ theme === 'system' ? undefined : theme }
 		>
 			<ToastProvider>
+				<LiveUnread onCount={ setUnread } route={ route } />
 				<header className="hdh-header">
 					<div className="hdh-header__inner">
 						<div className="hdh-brand">
@@ -155,6 +158,21 @@ export default function App() {
 								>
 									<Icon name={ r.icon } size={ 15 } />
 									{ r.label }
+									{ r.id === 'inbox' && unread > 0 && (
+										<span
+											className="hdh-nav__count"
+											aria-label={ sprintf(
+												/* translators: %d: number of tickets */
+												__(
+													'%d need a look',
+													'helpdesk-hero-hub'
+												),
+												unread
+											) }
+										>
+											{ unread }
+										</span>
+									) }
 								</a>
 							) ) }
 						</nav>
