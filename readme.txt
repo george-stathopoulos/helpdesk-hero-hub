@@ -106,6 +106,7 @@ Their sites can no longer send tickets to you, and you can no longer log in. The
 * Setup guide, and an invitation to share feedback and ideas.
 * Export and erase personal data with WordPress's privacy tools.
 * Backup and restore of the whole hub.
+* A clear message when the local WebLLM model is still loading in the browser.
 * New ticket notices: a count on the Support Hub menu and admin bar, a notice on other dashboard screens, New and Customer replied labels in the Inbox, and live updates while the hub is open.
 * Confirmations open in the dashboard (no browser pop-ups), so they work everywhere, including WordPress Playground.
 * Policy templates and site policies open in a wide editor.
