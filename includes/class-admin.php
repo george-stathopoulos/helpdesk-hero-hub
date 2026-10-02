@@ -223,7 +223,7 @@ final class Helpdesk_Hero_Hub_Admin {
 					'localAi'    => Helpdesk_Hero_Hub_AI::local_ai(),
 					'gmtOffset'  => (float) get_option( 'gmt_offset' ),
 					'supportUrl' => 'https://wordpress.org/support/plugin/helpdesk-hero-hub/',
-					'customerPluginUrl' => 'https://wordpress.org/plugins/helpdesk-hero/',
+					'customerPluginUrl' => 'https://github.com/george-stathopoulos/helpdesk-hero/releases/latest', // Until the WordPress.org listing is live.
 					/**
 					 * Filters whether the Pro add-on is active (it registers its own pages).
 					 *
