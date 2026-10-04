@@ -15,6 +15,25 @@ import { SaveBar } from '../ui/lib/settings';
 import PolicyEditor from '../components/PolicyEditor';
 import { message } from '../components/common';
 
+/**
+ * JSON with sorted keys, so two policies with the same rules compare equal.
+ *
+ * @param {any} value Value.
+ * @return {string} JSON.
+ */
+function stable( value ) {
+	if ( Array.isArray( value ) ) {
+		return `[${ value.map( stable ).join( ',' ) }]`;
+	}
+	if ( value && typeof value === 'object' ) {
+		return `{${ Object.keys( value )
+			.sort()
+			.map( ( k ) => `${ JSON.stringify( k ) }:${ stable( value[ k ] ) }` )
+			.join( ',' ) }}`;
+	}
+	return JSON.stringify( value );
+}
+
 export default function Policies() {
 	const policy = useApi( 'admin/policy' );
 	const templates = useApi( 'admin/templates' );
@@ -41,6 +60,10 @@ export default function Policies() {
 		return <Loading />;
 	}
 	const { roles, sections, ratings } = policy.data;
+	const saved = stable( policy.data.policy );
+	const matching = templates.data.templates.find(
+		( t ) => stable( t.policy ) === saved
+	);
 	const dirty =
 		JSON.stringify( draft ) !== JSON.stringify( policy.data.policy );
 
@@ -102,6 +125,59 @@ export default function Policies() {
 					'helpdesk-hero-hub'
 				) }
 			/>
+
+			<div
+				className="hdh-default-policy"
+				role="note"
+				aria-label={ __( 'Default policy', 'helpdesk-hero-hub' ) }
+			>
+				<span className="hdh-default-policy__badge">
+					{ __( 'Default', 'helpdesk-hero-hub' ) }
+				</span>
+				<div className="hdh-default-policy__text">
+					<strong>
+						{ __(
+							'Your default support policy',
+							'helpdesk-hero-hub'
+						) }
+					</strong>
+					<span className="hdh-muted">
+						{ sprintf(
+							/* translators: %d: number of sites */
+							_n(
+								'Used by %d site, and by every new site unless you choose a template.',
+								'Used by %d sites, and by every new site unless you choose a template.',
+								templates.data.default_sites || 0,
+								'helpdesk-hero-hub'
+							),
+							templates.data.default_sites || 0
+						) }
+						{ matching
+							? ' ' +
+							  sprintf(
+									/* translators: %s: template name */
+									__(
+										'Same rules as the “%s” template.',
+										'helpdesk-hero-hub'
+									),
+									matching.name
+							  )
+							: '' }
+					</span>
+				</div>
+				<Button
+					size="sm"
+					onClick={ () => {
+						const el = document.getElementById( 'default-policy' );
+						if ( el ) {
+							el.scrollIntoView( { behavior: 'smooth' } );
+							el.focus( { preventScroll: true } );
+						}
+					} }
+				>
+					{ __( 'Edit default policy', 'helpdesk-hero-hub' ) }
+				</Button>
+			</div>
 
 			<Card
 				title={ __( 'Templates', 'helpdesk-hero-hub' ) }
@@ -183,6 +259,15 @@ export default function Policies() {
 										>
 											{ t.name }
 										</button>
+										{ matching &&
+											matching.id === t.id && (
+												<span className="hdh-default-pill">
+													{ __(
+														'Same as default',
+														'helpdesk-hero-hub'
+													) }
+												</span>
+											) }
 										<div className="hdh-muted">
 											{ t.description }
 										</div>
@@ -243,7 +328,14 @@ export default function Policies() {
 				</div>
 			</Card>
 
-			<div className="hdh-section-title">
+			<div
+				id="default-policy"
+				className="hdh-section-title hdh-default-policy__title"
+				tabIndex={ -1 }
+			>
+				<span className="hdh-default-policy__badge">
+					{ __( 'Default', 'helpdesk-hero-hub' ) }
+				</span>
 				{ __( 'Default policy', 'helpdesk-hero-hub' ) }
 			</div>
 			<PolicyEditor

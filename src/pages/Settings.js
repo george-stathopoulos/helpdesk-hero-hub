@@ -1,4 +1,5 @@
 import { __ } from '@wordpress/i18n';
+import { applyFilters } from '@wordpress/hooks';
 import { useState, useEffect } from '@wordpress/element';
 import { useApi, send } from '../ui/lib/hooks';
 import {
@@ -9,14 +10,17 @@ import {
 	Loading,
 	useToast,
 	Button,
+	ErrorBoundary,
 } from '../ui/components/ui';
 import { SaveBar } from '../ui/lib/settings';
 import { message } from '../components/common';
 import BackupCard from '../components/BackupCard';
+import Icon from '../ui/components/Icon';
+import TiersManager from '../components/TiersManager';
+import CleanupCard from '../components/CleanupCard';
 
-const boot = window.hdhBoot || {};
 
-export default function Settings() {
+function GeneralSettings() {
 	const { data, error, reload } = useApi( 'admin/settings' );
 	const [ draft, setDraft ] = useState( null );
 	const [ saving, setSaving ] = useState( false );
@@ -48,7 +52,6 @@ export default function Settings() {
 
 	return (
 		<>
-			<PageHead title={ __( 'Settings', 'helpdesk-hero-hub' ) } />
 			<Card
 				title={ __( 'Your team', 'helpdesk-hero-hub' ) }
 				bodyClass={ null }
@@ -97,10 +100,6 @@ export default function Settings() {
 					/>
 				</Setting>
 			</Card>
-			<TagsManager />
-			{ boot.canManage !== false && (
-				<BackupCard onRestore={ () => reload() } />
-			) }
 			<SaveBar
 				dirty={ dirty }
 				saving={ saving }
@@ -144,7 +143,6 @@ function TagsManager() {
 				'Label tickets for your team and for reports. Customers see a ticket’s tags too, so keep names friendly.',
 				'helpdesk-hero-hub'
 			) }
-			style={ { marginTop: 18 } }
 		>
 			<div className="hdh-stack" style={ { gap: 8 } }>
 				{ tags.map( ( t, i ) => (
@@ -218,5 +216,116 @@ function TagsManager() {
 				</div>
 			</div>
 		</Card>
+	);
+}
+
+/**
+ * Settings, in sections. Add-ons add sections with the `helpdeskHeroHub.settingsSections`
+ * filter: `{ id, label, icon, group, Component }`.
+ *
+ * @param {Object} props       Props.
+ * @param {string} props.param Section from the address (#/settings/<section>).
+ * @param {Array}  props.pages Pages shown as sections (routes with `inSettings`).
+ * @return {JSX.Element} Page.
+ */
+export default function Settings( { param, pages = [] } ) {
+	const sections = [
+		{
+			id: 'general',
+			label: __( 'Your team', 'helpdesk-hero-hub' ),
+			icon: 'user',
+			group: 'hub',
+			Component: GeneralSettings,
+		},
+		// Full pages that live here (Policies, Help desk).
+		...pages.map( ( p ) => ( {
+			id: p.id,
+			label: p.label,
+			icon: p.icon,
+			group: 'hub',
+			Component: p.Page,
+		} ) ),
+		{
+			id: 'tags',
+			label: __( 'Ticket tags', 'helpdesk-hero-hub' ),
+			icon: 'clipboard',
+			group: 'hub',
+			Component: TagsManager,
+		},
+		{
+			id: 'tiers',
+			label: __( 'Customer tiers', 'helpdesk-hero-hub' ),
+			icon: 'users',
+			group: 'hub',
+			Component: TiersManager,
+		},
+		{
+			id: 'cleanup',
+			label: __( 'Cleanup and import', 'helpdesk-hero-hub' ),
+			icon: 'trash',
+			group: 'hub',
+			Component: CleanupCard,
+		},
+		{
+			id: 'backup',
+			label: __( 'Backup and restore', 'helpdesk-hero-hub' ),
+			icon: 'download',
+			group: 'hub',
+			Component: BackupCard,
+		},
+		...applyFilters( 'helpdeskHeroHub.settingsSections', [] ),
+	];
+	const current = sections.find( ( x ) => x.id === param ) || sections[ 0 ];
+	const groups = [
+		{ id: 'hub', label: __( 'Hub', 'helpdesk-hero-hub' ) },
+		{ id: 'pro', label: __( 'Pro', 'helpdesk-hero-hub' ) },
+	];
+	const { Component } = current;
+	return (
+		<>
+			<PageHead title={ __( 'Settings', 'helpdesk-hero-hub' ) } />
+			<div className="hdh-settings">
+				<nav
+					className="hdh-settings__nav"
+					aria-label={ __( 'Settings sections', 'helpdesk-hero-hub' ) }
+				>
+					{ groups.map( ( g ) => {
+						const items = sections.filter(
+							( x ) => ( x.group || 'pro' ) === g.id
+						);
+						if ( ! items.length ) {
+							return null;
+						}
+						return (
+							<div key={ g.id } className="hdh-settings__group">
+								<div className="hdh-settings__group-label">
+									{ g.label }
+								</div>
+								{ items.map( ( x ) => (
+									<a
+										key={ x.id }
+										href={ `#/settings/${ x.id }` }
+										className={ `hdh-settings__item ${
+											x.id === current.id ? 'is-active' : ''
+										}` }
+										aria-current={
+											x.id === current.id ? 'page' : undefined
+										}
+									>
+										<Icon name={ x.icon || 'settings' } size={ 15 } />
+										{ x.label }
+									</a>
+								) ) }
+							</div>
+						);
+					} ) }
+				</nav>
+				<div className="hdh-settings__main">
+					<ErrorBoundary resetKey={ current.id }>
+						<Component />
+					</ErrorBoundary>
+				</div>
+			</div>
+		</>
 	);
 }

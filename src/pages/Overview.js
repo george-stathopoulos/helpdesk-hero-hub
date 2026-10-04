@@ -108,7 +108,7 @@ export default function Overview() {
 	return (
 		<>
 			<PageHead
-				title={ __( 'Overview', 'helpdesk-hero-hub' ) }
+				title={ __( 'Reports', 'helpdesk-hero-hub' ) }
 				lede={ __(
 					'The last 30 days across all connected sites.',
 					'helpdesk-hero-hub'
@@ -169,7 +169,7 @@ export default function Overview() {
 							className="hdh-row"
 							style={ { justifyContent: 'center' } }
 						>
-							<a className="hdh-btn is-primary" href="#/sites">
+							<a className="hdh-btn is-primary" href="#/connect">
 								<Icon name="plus" size={ 15 } />
 								{ __( 'Connect a site', 'helpdesk-hero-hub' ) }
 							</a>

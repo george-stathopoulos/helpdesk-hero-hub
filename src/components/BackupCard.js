@@ -2,7 +2,7 @@ import { __, sprintf } from '@wordpress/i18n';
 import { useState, useRef } from '@wordpress/element';
 import { send } from '../ui/lib/hooks';
 import { Card, Button, useToast } from '../ui/components/ui';
-import { Check, confirmAction } from '../ui/components/kit';
+import { Check, TextField, confirmAction } from '../ui/components/kit';
 import Icon from '../ui/components/Icon';
 import { message } from './common';
 
@@ -15,6 +15,7 @@ import { message } from './common';
  */
 export default function BackupCard( { onRestore } ) {
 	const [ secrets, setSecrets ] = useState( true );
+	const [ passphrase, setPassphrase ] = useState( '' );
 	const [ busy, setBusy ] = useState( '' );
 	const [ result, setResult ] = useState( null );
 	const file = useRef( null );
@@ -22,7 +23,10 @@ export default function BackupCard( { onRestore } ) {
 
 	const download = () => {
 		setBusy( 'export' );
-		send( `admin/backup?secrets=${ secrets ? 1 : 0 }`, 'GET' )
+		send( 'admin/backup/export', 'POST', {
+			secrets: secrets ? 1 : 0,
+			passphrase,
+		} )
 			.then( ( data ) => {
 				const blob = new window.Blob(
 					[ JSON.stringify( data, null, '\t' ) ],
@@ -74,8 +78,18 @@ export default function BackupCard( { onRestore } ) {
 			) {
 				return;
 			}
+			if ( backup && backup.encrypted && ! passphrase ) {
+				toast(
+					__(
+						'This backup is encrypted. Enter its passphrase first, then choose the file again.',
+						'helpdesk-hero-hub'
+					),
+					'alert'
+				);
+				return;
+			}
 			setBusy( 'import' );
-			send( 'admin/backup', 'POST', { backup } )
+			send( 'admin/backup', 'POST', { backup, passphrase } )
 				.then( ( r ) => {
 					setResult( r );
 					toast( __( 'Backup restored', 'helpdesk-hero-hub' ) );
@@ -104,17 +118,37 @@ export default function BackupCard( { onRestore } ) {
 						'helpdesk-hero-hub'
 					) }
 					desc={ __(
-						'Lets sites reconnect on their own after a restore, and keeps help desk keys. Keep the file somewhere safe: anyone with it could act as your hub.',
+						'Lets sites reconnect on their own after a restore, and keeps help desk keys. The file is then encrypted with your passphrase; without it, nobody (including you) can open it.',
 						'helpdesk-hero-hub'
 					) }
 					checked={ secrets }
 					onChange={ setSecrets }
 				/>
+				<TextField
+					label={ __( 'Passphrase', 'helpdesk-hero-hub' ) }
+					type="password"
+					autoComplete="new-password"
+					value={ passphrase }
+					onChange={ setPassphrase }
+					help={
+						secrets
+							? __(
+									'Required with connection keys: at least 10 characters. Also used to open an encrypted backup when you restore. Store it apart from the file.',
+									'helpdesk-hero-hub'
+							  )
+							: __(
+									'Optional without keys. Needed to restore an encrypted backup.',
+									'helpdesk-hero-hub'
+							  )
+					}
+				/>
 				<div className="hdh-row">
 					<Button
 						variant="primary"
 						onClick={ download }
-						disabled={ !! busy }
+						disabled={
+							!! busy || ( secrets && passphrase.length < 10 )
+						}
 					>
 						<Icon name="download" size={ 15 } />
 						{ busy === 'export'

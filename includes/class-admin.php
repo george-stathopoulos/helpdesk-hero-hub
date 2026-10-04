@@ -30,6 +30,7 @@ final class Helpdesk_Hero_Hub_Admin {
 	 */
 	public static function init() {
 		add_action( 'admin_menu', array( __CLASS__, 'menu' ) );
+		add_action( 'admin_notices', array( __CLASS__, 'keys_notice' ) );
 		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'assets' ) );
 		add_filter( 'admin_body_class', array( __CLASS__, 'body_class' ) );
 		add_action( 'admin_init', array( __CLASS__, 'activation_redirect' ) );
@@ -222,8 +223,21 @@ final class Helpdesk_Hero_Hub_Admin {
 					'aiEnabled'  => Helpdesk_Hero_Hub_AI::available(),
 					'localAi'    => Helpdesk_Hero_Hub_AI::local_ai(),
 					'gmtOffset'  => (float) get_option( 'gmt_offset' ),
+					'userId'     => get_current_user_id(),
+					'assignOnReply' => Helpdesk_Hero_Hub::assign_on_reply(),
+					'restUrl'    => rest_url( 'helpdesk-hero-hub/v1/' ),
+					'restNonce'  => wp_create_nonce( 'wp_rest' ),
+					'hasTiers'   => (bool) Helpdesk_Hero_Hub_Tiers::all(),
+					'customStatuses' => Helpdesk_Hero_Hub::custom_statuses(),
+					'services'   => Helpdesk_Hero_Hub::services(),
+					/**
+					 * Filters whether service level agreements are in use (Helpdesk Hero Pro).
+					 *
+					 * @param bool $sla In use.
+					 */
+					'sla'        => (bool) apply_filters( 'helpdesk_hero_hub_sla_enabled', false ),
 					'supportUrl' => 'https://wordpress.org/support/plugin/helpdesk-hero-hub/',
-					'customerPluginUrl' => 'https://github.com/george-stathopoulos/helpdesk-hero/releases/latest', // Until the WordPress.org listing is live.
+					'customerPluginUrl' => (string) apply_filters( 'helpdesk_hero_hub_customer_plugin_url', 'https://github.com/george-stathopoulos/helpdesk-hero/releases/latest' ), // Until the WordPress.org listing is live.
 					/**
 					 * Filters whether the Pro add-on is active (it registers its own pages).
 					 *
@@ -273,5 +287,24 @@ final class Helpdesk_Hero_Hub_Admin {
 	public static function menu_icon() {
 		$svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="black" fill-rule="evenodd" d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm3.9 10.5 2 2a6 6 0 0 0 0-9l-2 2a3 3 0 0 1 0 5Zm-1.4 1.4a3 3 0 0 1-5 0l-2 2a6 6 0 0 0 9 0l-2-2ZM6.1 12.5a3 3 0 0 1 0-5l-2-2a6 6 0 0 0 0 9l2-2Zm1.4-6.4a3 3 0 0 1 5 0l2-2a6 6 0 0 0-9 0l2 2ZM10 8.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>';
 		return 'data:image/svg+xml;base64,' . base64_encode( $svg ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
+	}
+
+	/**
+	 * Warn when stored keys can't be decrypted because wp-config.php keys changed.
+	 */
+	public static function keys_notice() {
+		if ( ! current_user_can( 'manage_options' ) || ! Helpdesk_Hero_Hub_Crypto::key_changed() ) {
+			return;
+		}
+		printf(
+			'<div class="notice notice-error"><p>%s</p></div>',
+			esc_html(
+				sprintf(
+					/* translators: %s: PHP constant name */
+					__( 'Helpdesk Hero Hub can’t read its connection keys: the security keys in wp-config.php changed since they were saved. Connected sites can’t reach the hub until you restore the previous keys in wp-config.php, or restore a backup with keys, or send each site a new connection code. To avoid this in future, define %s in wp-config.php.', 'helpdesk-hero-hub' ),
+					'HELPDESK_HERO_HUB_ENCRYPTION_KEY'
+				)
+			)
+		);
 	}
 }

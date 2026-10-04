@@ -125,6 +125,7 @@ final class Helpdesk_Hero_Hub_Privacy {
 	public static function erase( $email ) {
 		global $wpdb;
 		$tickets = self::tickets_for( $email );
+		Helpdesk_Hero_Hub_Attachments::delete_for_tickets( wp_list_pluck( $tickets, 'id' ) );
 		foreach ( $tickets as $ticket ) {
 			$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 				Helpdesk_Hero_Hub_DB::table( 'tickets' ),

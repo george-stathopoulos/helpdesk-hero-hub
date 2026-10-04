@@ -63,14 +63,19 @@ final class Helpdesk_Hero_Hub_Settings {
 	}
 
 	/**
-	 * A secret.
+	 * A secret (kept encrypted in the database).
 	 *
 	 * @param string $key Key.
 	 * @return string
 	 */
 	public static function secret( $key ) {
 		$stored = get_option( self::SECRETS, array() );
-		return is_array( $stored ) && isset( $stored[ $key ] ) ? (string) $stored[ $key ] : '';
+		if ( ! is_array( $stored ) || ! isset( $stored[ $key ] ) ) {
+			return '';
+		}
+		// Stored encrypted (older versions stored plain text, which still reads).
+		$plain = Helpdesk_Hero_Hub_Crypto::decrypt( (string) $stored[ $key ] );
+		return false === $plain ? '' : $plain;
 	}
 
 	/**
@@ -85,7 +90,7 @@ final class Helpdesk_Hero_Hub_Settings {
 		if ( '' === (string) $value ) {
 			unset( $stored[ $key ] );
 		} else {
-			$stored[ $key ] = (string) $value;
+			$stored[ $key ] = Helpdesk_Hero_Hub_Crypto::encrypt( (string) $value );
 		}
 		update_option( self::SECRETS, $stored, false );
 	}

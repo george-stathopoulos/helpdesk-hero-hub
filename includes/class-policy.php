@@ -31,6 +31,11 @@ final class Helpdesk_Hero_Hub_Policy {
 	}
 
 	/**
+	 * "Hours" that mean access with no end date.
+	 */
+	const PERMANENT = 999999;
+
+	/**
 	 * Diagnostics sections.
 	 *
 	 * @return array Key => label.
@@ -68,6 +73,13 @@ final class Helpdesk_Hero_Hub_Policy {
 				'log_page_views'     => true,
 				'troubleshooting'    => true,
 				'end_on_close'       => true,
+				// Customers may give access with no end date ("Until I end it").
+				'permanent'          => false,
+			),
+			// Pinpoint ("Report a problem" on the customer's pages).
+			// customer: off until they turn it on · on: on unless they turn it off · always: on · off: not offered.
+			'pinpoint'    => array(
+				'mode' => 'customer',
 			),
 			'tickets'     => array(
 				'customer_replies' => true,
@@ -152,7 +164,7 @@ final class Helpdesk_Hero_Hub_Policy {
 	 */
 	private static function resolve( $site ) {
 		$source = self::source( $site );
-		if ( 'template' === $source['type'] ) {
+		if ( in_array( $source['type'], array( 'template', 'tier' ), true ) ) {
 			$template = Helpdesk_Hero_Hub_Templates::get( $source['template'] );
 			if ( $template ) {
 				return $template['policy'];
@@ -167,7 +179,7 @@ final class Helpdesk_Hero_Hub_Policy {
 	 * Where a site's policy comes from.
 	 *
 	 * @param array|null $site Site row.
-	 * @return array { type: default|template|custom, template: id, name: label }
+	 * @return array { type: default|template|tier|custom, template: id, name: label }
 	 */
 	public static function source( $site ) {
 		$policy = $site['policy'] ?? null;
@@ -187,6 +199,19 @@ final class Helpdesk_Hero_Hub_Policy {
 				'name'     => __( 'Custom', 'helpdesk-hero-hub' ),
 			);
 		}
+		// No policy of its own: its customer tier's template, if the tier has one.
+		$tier = $site ? Helpdesk_Hero_Hub_Tiers::get( (string) ( $site['tier'] ?? '' ) ) : null;
+		if ( $tier && ! empty( $tier['policy'] ) ) {
+			$template = Helpdesk_Hero_Hub_Templates::get( (string) $tier['policy'] );
+			if ( $template ) {
+				return array(
+					'type'     => 'tier',
+					'template' => $template['id'],
+					/* translators: 1: template, 2: customer tier */
+					'name'     => sprintf( __( '%1$s (from tier %2$s)', 'helpdesk-hero-hub' ), $template['name'], $tier['name'] ),
+				);
+			}
+		}
 		return array(
 			'type'     => 'default',
 			'template' => '',
@@ -195,7 +220,18 @@ final class Helpdesk_Hero_Hub_Policy {
 	}
 
 	/**
-	 * Send a site its effective policy.
+	 * Send every connected site its policy again (after settings that travel with it change).
+	 */
+	public static function push_all() {
+		foreach ( Helpdesk_Hero_Hub::sites() as $site ) {
+			if ( 'active' === $site['status'] ) {
+				self::push( (int) $site['id'] );
+			}
+		}
+	}
+
+	/**
+	 * Send a site its policy (and settings that travel with it).
 	 *
 	 * @param int $site_id Site.
 	 */
@@ -210,9 +246,16 @@ final class Helpdesk_Hero_Hub_Policy {
 	 * @return array
 	 */
 	public static function payload( $site ) {
+		$files = Helpdesk_Hero_Hub_Attachments::config();
 		return array(
 			'policy'   => self::for_site( $site ),
 			'branding' => Helpdesk_Hero_Hub::branding(),
+			// Sites from version 2.1 use these; older ones ignore them.
+			'extras'   => array(
+				'fields'      => Helpdesk_Hero_Hub::field_definitions(),
+				'attachments' => $files['enabled'] ? $files : array( 'enabled' => false ),
+				'usage'       => $site ? Helpdesk_Hero_Hub::site_usage( $site ) : null,
+			),
 		);
 	}
 
@@ -233,8 +276,9 @@ final class Helpdesk_Hero_Hub_Policy {
 		if ( ! $roles ) {
 			$roles = array( 'restricted_admin' );
 		}
-		$max     = max( 1, min( 24 * 30, (int) $a['max_hours'] ) );
-		$default = max( 1, min( $max, (int) $a['default_hours'] ) );
+		$max       = max( 1, min( 24 * 30, (int) $a['max_hours'] ) );
+		$permanent = ! empty( $a['permanent'] );
+		$default   = $permanent && self::PERMANENT === (int) $a['default_hours'] ? self::PERMANENT : max( 1, min( $max, (int) $a['default_hours'] ) );
 
 		$out['access'] = array(
 			'mode'              => in_array( $a['mode'], array( 'ask', 'always', 'off' ), true ) ? $a['mode'] : 'ask',
@@ -250,6 +294,13 @@ final class Helpdesk_Hero_Hub_Policy {
 			'log_page_views'    => (bool) $a['log_page_views'],
 			'troubleshooting'   => (bool) $a['troubleshooting'],
 			'end_on_close'      => (bool) $a['end_on_close'],
+			'permanent'         => $permanent,
+			'rules'             => self::clean_access_rules( $a['rules'] ?? array() ),
+		);
+
+		$p               = array_merge( $d['pinpoint'], (array) ( $in['pinpoint'] ?? array() ) );
+		$out['pinpoint'] = array(
+			'mode' => in_array( $p['mode'], array( 'customer', 'on', 'always', 'off' ), true ) ? $p['mode'] : 'customer',
 		);
 
 		$categories = array();
@@ -282,5 +333,31 @@ final class Helpdesk_Hero_Hub_Policy {
 		 * @param array $in  Raw input.
 		 */
 		return (array) apply_filters( 'helpdesk_hero_hub_policy', $out, $in );
+	}
+
+	/**
+	 * Access rules per category and priority, cleaned.
+	 *
+	 * @param mixed $in Raw { categories: { name: choice }, priorities: { priority: choice } }.
+	 * @return array
+	 */
+	public static function clean_access_rules( $in ) {
+		$in      = is_array( $in ) ? $in : array();
+		$choices = array( 'ticked', 'unticked', 'off', 'required' );
+		$out     = array(
+			'categories' => array(),
+			'priorities' => array(),
+		);
+		foreach ( (array) ( $in['categories'] ?? array() ) as $name => $choice ) {
+			if ( in_array( $choice, $choices, true ) ) {
+				$out['categories'][ substr( sanitize_text_field( (string) $name ), 0, 60 ) ] = $choice;
+			}
+		}
+		foreach ( (array) ( $in['priorities'] ?? array() ) as $name => $choice ) {
+			if ( in_array( $name, array( 'low', 'normal', 'high', 'urgent' ), true ) && in_array( $choice, $choices, true ) ) {
+				$out['priorities'][ $name ] = $choice;
+			}
+		}
+		return $out;
 	}
 }

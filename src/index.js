@@ -6,6 +6,7 @@ import Icon from './ui/components/Icon';
 import * as hooks from './ui/lib/hooks';
 import * as time from './ui/lib/time';
 import PolicyEditor from './components/PolicyEditor';
+import * as inbox from './components/InboxFilters';
 import './ui/style.scss';
 
 /**
@@ -13,7 +14,7 @@ import './ui/style.scss';
  * `helpdesk-hero-hub-admin` handle can use these, and register pages and panels with the
  * `helpdeskHeroHub.*` filters from `@wordpress/hooks`.
  */
-window.helpdeskHeroHub = { ui, kit, Icon, hooks, time, PolicyEditor };
+window.helpdeskHeroHub = { ui, kit, Icon, hooks, time, PolicyEditor, inbox };
 
 function mount() {
 	const root = document.getElementById( 'hdh-root' );

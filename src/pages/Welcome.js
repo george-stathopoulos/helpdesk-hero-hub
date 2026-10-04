@@ -2,8 +2,9 @@ import { __ } from '@wordpress/i18n';
 import { useState, useEffect } from '@wordpress/element';
 import { useApi, send } from '../ui/lib/hooks';
 import { Button, Loading, ErrorNotice, useToast } from '../ui/components/ui';
-import { TextField, CopyBox } from '../ui/components/kit';
+import { TextField } from '../ui/components/kit';
 import Icon from '../ui/components/Icon';
+import PinpointDemo from '../ui/components/PinpointDemo';
 import { message } from '../components/common';
 import BackupCard from '../components/BackupCard';
 
@@ -27,8 +28,6 @@ export default function Welcome( { go } ) {
 	const [ step, setStep ] = useState( 0 );
 	const [ team, setTeam ] = useState( null );
 	const [ template, setTemplate ] = useState( 'standard' );
-	const [ site, setSite ] = useState( { label: '', email: '' } );
-	const [ code, setCode ] = useState( '' );
 	const [ busy, setBusy ] = useState( false );
 	const toast = useToast();
 
@@ -62,7 +61,6 @@ export default function Welcome( { go } ) {
 		{ id: 'team', label: __( 'Your team', 'helpdesk-hero-hub' ) },
 		{ id: 'policy', label: __( 'Support policy', 'helpdesk-hero-hub' ) },
 		{ id: 'helpdesk', label: __( 'Help desk', 'helpdesk-hero-hub' ) },
-		{ id: 'site', label: __( 'First site', 'helpdesk-hero-hub' ) },
 		{ id: 'done', label: __( 'Done', 'helpdesk-hero-hub' ) },
 	];
 	const current = steps[ step ];
@@ -73,7 +71,7 @@ export default function Welcome( { go } ) {
 		send( 'admin/onboarding', 'POST', { done: true } )
 			.then( () => {
 				window.hdhBoot.onboarded = true;
-				go( to || 'overview' );
+				go( to || 'inbox' );
 			} )
 			.catch( ( e ) => toast( message( e ), 'alert' ) )
 			.finally( () => setBusy( false ) );
@@ -103,14 +101,6 @@ export default function Welcome( { go } ) {
 			return;
 		}
 		setStep( step + 1 );
-	};
-
-	const createCode = () => {
-		setBusy( true );
-		send( 'admin/sites', 'POST', { label: site.label, email: site.email } )
-			.then( ( r ) => setCode( r.code ) )
-			.catch( ( e ) => toast( message( e ), 'alert' ) )
-			.finally( () => setBusy( false ) );
 	};
 
 	const points = [
@@ -178,7 +168,7 @@ export default function Welcome( { go } ) {
 						</h1>
 						<p className="hdh-wizard__lede">
 							{ __(
-								'Your customers install the free Helpdesk Hero plugin and connect their sites to this hub with a code. This guide takes about two minutes.',
+								'Your customers install the free Helpdesk Hero plugin and connect their sites to this hub with a link you send them. This guide takes about two minutes.',
 								'helpdesk-hero-hub'
 							) }
 						</p>
@@ -208,6 +198,18 @@ export default function Welcome( { go } ) {
 								</div>
 							) ) }
 						</div>
+						<div className="hdh-wizard__demo">
+							<div style={ { fontWeight: 620, marginBottom: 4 } }>
+								{ __( 'Pinpoint: customers show you the problem', 'helpdesk-hero-hub' ) }
+							</div>
+							<div className="hdh-muted" style={ { fontSize: 13, marginBottom: 10 } }>
+								{ __(
+									'They click the broken part of their page; you open it with that spot highlighted. You choose in your support policy whether it’s on for customers.',
+									'helpdesk-hero-hub'
+								) }
+							</div>
+							<PinpointDemo />
+						</div>
 						<details style={ { marginTop: 18 } }>
 							<summary
 								style={ { cursor: 'pointer', fontWeight: 600 } }
@@ -220,7 +222,7 @@ export default function Welcome( { go } ) {
 							<div style={ { marginTop: 12 } }>
 								<BackupCard
 									onRestore={ () => {
-										window.location.hash = '#/overview';
+										window.location.hash = '#/inbox';
 										window.location.reload();
 									} }
 								/>
@@ -381,77 +383,6 @@ export default function Welcome( { go } ) {
 					</div>
 				) }
 
-				{ current.id === 'site' && (
-					<div className="hdh-wizard__body">
-						<h1 className="hdh-wizard__title">
-							{ __(
-								'Connect your first customer',
-								'helpdesk-hero-hub'
-							) }
-						</h1>
-						<p className="hdh-wizard__lede">
-							{ __(
-								'Create a connection code and send it to them. They install the free Helpdesk Hero plugin and paste it in Get Help. You can also do this later under Sites.',
-								'helpdesk-hero-hub'
-							) }
-						</p>
-						{ ! code ? (
-							<div className="hdh-stack">
-								<div className="hdh-form-grid">
-									<TextField
-										label={ __(
-											'Customer or site name',
-											'helpdesk-hero-hub'
-										) }
-										value={ site.label }
-										onChange={ ( v ) =>
-											setSite( { ...site, label: v } )
-										}
-									/>
-									<TextField
-										label={ __(
-											'Customer email (optional)',
-											'helpdesk-hero-hub'
-										) }
-										type="email"
-										value={ site.email }
-										onChange={ ( v ) =>
-											setSite( { ...site, email: v } )
-										}
-									/>
-								</div>
-								<div>
-									<Button
-										icon="key"
-										onClick={ createCode }
-										disabled={ busy || ! site.label.trim() }
-									>
-										{ __(
-											'Create connection code',
-											'helpdesk-hero-hub'
-										) }
-									</Button>
-								</div>
-							</div>
-						) : (
-							<div className="hdh-stack">
-								<CopyBox
-									value={ code }
-									label={ __(
-										'Copy code',
-										'helpdesk-hero-hub'
-									) }
-									rows={ 4 }
-									note={ __(
-										'Works once, expires in 7 days.',
-										'helpdesk-hero-hub'
-									) }
-								/>
-							</div>
-						) }
-					</div>
-				) }
-
 				{ current.id === 'done' && (
 					<div
 						className="hdh-wizard__body"
@@ -475,18 +406,38 @@ export default function Welcome( { go } ) {
 							style={ { margin: '0 auto' } }
 						>
 							{ __(
-								'Tickets from connected sites appear in the Inbox, and the Overview shows trends and recurring issues as they come in.',
+								'Next, connect your first customer site. It takes them about a minute: they install the free plugin and click a link. You can also do it later under Sites.',
 								'helpdesk-hero-hub'
 							) }
 						</p>
 						<div className="hdh-wizard__choices">
 							<button
 								type="button"
-								className="hdh-choice"
-								onClick={ () => finish( 'overview' ) }
+								className="hdh-choice is-active"
+								onClick={ () => finish( 'connect' ) }
 								disabled={ busy }
 							>
-								<Icon name="overview" size={ 22 } />
+								<Icon name="globe" size={ 22 } />
+								<strong>
+									{ __(
+										'Connect your first site',
+										'helpdesk-hero-hub'
+									) }
+								</strong>
+								<span>
+									{ __(
+										'Create a connection link for a customer, or for a site of your own to try it.',
+										'helpdesk-hero-hub'
+									) }
+								</span>
+							</button>
+							<button
+								type="button"
+								className="hdh-choice"
+								onClick={ () => finish( 'inbox' ) }
+								disabled={ busy }
+							>
+								<Icon name="inbox" size={ 22 } />
 								<strong>
 									{ __(
 										'Go to the hub',
@@ -495,7 +446,7 @@ export default function Welcome( { go } ) {
 								</strong>
 								<span>
 									{ __(
-										'Overview, Inbox and Sites.',
+										'Inbox, Sites, Reports and Settings.',
 										'helpdesk-hero-hub'
 									) }
 								</span>
@@ -526,7 +477,7 @@ export default function Welcome( { go } ) {
 							style={ { fontSize: 12.5, marginTop: 18 } }
 						>
 							{ __(
-								'You can open this guide again from the Overview.',
+								'You can open this guide again from Reports.',
 								'helpdesk-hero-hub'
 							) }
 						</p>
@@ -537,7 +488,7 @@ export default function Welcome( { go } ) {
 					<footer className="hdh-wizard__foot">
 						<Button
 							variant="ghost"
-							onClick={ () => finish( 'overview' ) }
+							onClick={ () => finish( 'inbox' ) }
 							disabled={ busy }
 						>
 							{ __( 'Skip setup', 'helpdesk-hero-hub' ) }

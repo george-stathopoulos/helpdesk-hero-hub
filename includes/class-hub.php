@@ -24,7 +24,7 @@ final class Helpdesk_Hero_Hub {
 	 *
 	 * @var string[]
 	 */
-	const DELIVERED = array( 'reply', 'status', 'notice', 'extension_request', 'policy', 'reference', 'tags' );
+	const DELIVERED = array( 'reply', 'status', 'notice', 'extension_request', 'end_access', 'policy', 'reference', 'tags', 'merged', 'removed' );
 
 	/**
 	 * Register hooks.
@@ -106,7 +106,62 @@ final class Helpdesk_Hero_Hub {
 		return array(
 			'site_id' => (int) $wpdb->insert_id,
 			'code'    => self::make_code( $token ),
+			'link'    => self::connect_link( $token ),
 		);
+	}
+
+	/**
+	 * New code and link for a site that hasn't connected yet. The earlier ones stop working.
+	 *
+	 * @param int $site_id Site.
+	 * @return array|WP_Error { site_id, code, link }
+	 */
+	public static function renew_invite( $site_id ) {
+		global $wpdb;
+		$site = self::site( $site_id );
+		if ( ! $site || 'pending' !== $site['status'] ) {
+			return new WP_Error( 'helpdesk_hero_hub_site', __( 'This site is already connected.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
+		}
+		$token = bin2hex( random_bytes( 20 ) );
+		$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			Helpdesk_Hero_Hub_DB::table( 'sites' ),
+			array(
+				'invite_hash'    => hash( 'sha256', $token ),
+				'invite_expires' => Helpdesk_Hero_Hub_DB::now( 7 * DAY_IN_SECONDS ),
+			),
+			array( 'id' => (int) $site_id )
+		);
+		return array(
+			'site_id' => (int) $site_id,
+			'code'    => self::make_code( $token ),
+			'link'    => self::connect_link( $token ),
+		);
+	}
+
+	/**
+	 * Connection link: a page on this hub where the customer enters their site address and is
+	 * taken to their dashboard with the code filled in.
+	 *
+	 * @param string $token Invite token.
+	 * @return string
+	 */
+	public static function connect_link( $token ) {
+		return add_query_arg( Helpdesk_Hero_Hub_Connect_Page::PARAM, $token, home_url( '/' ) );
+	}
+
+	/**
+	 * The waiting site for an invite token (not expired), or null.
+	 *
+	 * @param string $token Invite token.
+	 * @return array|null
+	 */
+	public static function invite_site( $token ) {
+		global $wpdb;
+		if ( ! preg_match( '/^[a-f0-9]{40}$/', (string) $token ) ) {
+			return null;
+		}
+		$site = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE invite_hash = %s AND status = %s', Helpdesk_Hero_Hub_DB::table( 'sites' ), hash( 'sha256', $token ), 'pending' ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return $site && strtotime( $site['invite_expires'] . ' UTC' ) > time() ? $site : null;
 	}
 
 	/**
@@ -144,7 +199,18 @@ final class Helpdesk_Hero_Hub {
 		if ( ! Helpdesk_Hero_Hub_Signer::valid_url( $endpoint ) ) {
 			return new WP_Error( 'helpdesk_hero_endpoint', __( 'The site did not send a valid address.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
 		}
-		$secret = bin2hex( random_bytes( 32 ) );
+		if ( ! Helpdesk_Hero_Hub_Signer::secure_url( $endpoint ) ) {
+			return Helpdesk_Hero_Hub_Signer::insecure_error( $endpoint );
+		}
+		// Sites from version 2.1 send a public key: each side then signs with its own key pair.
+		// Older sites get a shared key, and upgrade to key pairs once they update.
+		$peer = (string) ( $info['public_key'] ?? '' );
+		if ( Helpdesk_Hero_Hub_Crypto::valid_public_key( $peer ) ) {
+			$creds         = Helpdesk_Hero_Hub_Crypto::keypair();
+			$creds['peer'] = $peer;
+		} else {
+			$creds = array( 'hmac' => bin2hex( random_bytes( 32 ) ) );
+		}
 		$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			$table,
 			array(
@@ -152,7 +218,7 @@ final class Helpdesk_Hero_Hub {
 				'url'            => esc_url_raw( (string) ( $info['url'] ?? '' ) ),
 				'endpoint'       => $endpoint,
 				'contact_email'  => $site['contact_email'] ? $site['contact_email'] : sanitize_email( (string) ( $info['email'] ?? '' ) ),
-				'secret'         => $secret,
+				'secret'         => Helpdesk_Hero_Hub_Crypto::store( $creds ),
 				'status'         => 'active',
 				'invite_hash'    => '',
 				'invite_expires' => null,
@@ -168,7 +234,123 @@ final class Helpdesk_Hero_Hub {
 			array( 'id' => (int) $site['id'] )
 		);
 		do_action( 'helpdesk_hero_hub_site_connected', (int) $site['id'] );
-		return self::site( (int) $site['id'] );
+		return array_merge(
+			self::site( (int) $site['id'] ),
+			array(
+				'hmac'       => $creds['hmac'] ?? '',
+				'public_key' => $creds['pk'] ?? '',
+			)
+		);
+	}
+
+	/**
+	 * A site's connection keys (decrypted).
+	 *
+	 * @param array $site Site row.
+	 * @return array Credentials, see Helpdesk_Hero_Hub_Crypto.
+	 */
+	public static function creds( array $site ) {
+		return Helpdesk_Hero_Hub_Crypto::load( (string) $site['secret'] );
+	}
+
+	/**
+	 * Save a site's connection keys (encrypted).
+	 *
+	 * @param int   $id    Site.
+	 * @param array $creds Credentials.
+	 */
+	public static function save_creds( $id, array $creds ) {
+		self::update_site( (int) $id, array( 'secret' => Helpdesk_Hero_Hub_Crypto::store( $creds ) ) );
+	}
+
+	/**
+	 * How a site's connection is secured, for the dashboard.
+	 *
+	 * @param array $site Site row.
+	 * @return array { type: keypair|upgrading|shared|none|unreadable, key_id, site_key_id }
+	 */
+	public static function security( array $site ) {
+		if ( '' === (string) $site['secret'] ) {
+			return array( 'type' => 'none' );
+		}
+		$creds = self::creds( $site );
+		if ( ! $creds ) {
+			return array( 'type' => 'unreadable' );
+		}
+		if ( ! empty( $creds['peer'] ) ) {
+			return array(
+				'type'        => ! empty( $creds['confirmed'] ) || ( empty( $creds['hmac'] ) && empty( $creds['old'] ) ) ? 'keypair' : 'upgrading',
+				'key_id'      => Helpdesk_Hero_Hub_Crypto::key_id( (string) ( $creds['pk'] ?? '' ) ),
+				'site_key_id' => Helpdesk_Hero_Hub_Crypto::key_id( (string) $creds['peer'] ),
+			);
+		}
+		return array( 'type' => 'shared' );
+	}
+
+	/**
+	 * A site asks to move from a shared key to key pairs (signed with the shared key).
+	 *
+	 * @param array  $site Site.
+	 * @param string $peer The site's new public key.
+	 * @return array|WP_Error { public_key }
+	 */
+	public static function upgrade_keys( array $site, $peer ) {
+		$creds = self::creds( $site );
+		if ( ! Helpdesk_Hero_Hub_Crypto::valid_public_key( $peer ) ) {
+			return new WP_Error( 'helpdesk_hero_keys', __( 'The site sent a key that isn’t valid.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
+		}
+		if ( ! empty( $creds['confirmed'] ) || empty( $creds['hmac'] ) ) {
+			return new WP_Error( 'helpdesk_hero_keys', __( 'This connection already uses key pairs.', 'helpdesk-hero-hub' ), array( 'status' => 409 ) );
+		}
+		// Keep the shared key until the site signs with its new key (proof it got ours).
+		$pair  = Helpdesk_Hero_Hub_Crypto::keypair();
+		$creds = array(
+			'hmac' => $creds['hmac'],
+			'sk'   => $pair['sk'],
+			'pk'   => $pair['pk'],
+			'peer' => $peer,
+		);
+		self::save_creds( (int) $site['id'], $creds );
+		return array( 'public_key' => $pair['pk'] );
+	}
+
+	/**
+	 * Replace a site's keys (the team asked for new ones). The current keys sign the change, and
+	 * stay valid until the site has used the new ones once.
+	 *
+	 * @param array $site Site.
+	 * @return true|WP_Error
+	 */
+	public static function rotate_keys( array $site ) {
+		$current = self::creds( $site );
+		if ( ! $current ) {
+			return new WP_Error( 'helpdesk_hero_keys', __( 'This site’s keys can’t be read. Disconnect it and connect it again.', 'helpdesk-hero-hub' ) );
+		}
+		$pair   = Helpdesk_Hero_Hub_Crypto::keypair();
+		$result = self::site_request( $site, '/helpdesk-hero/v1/client/keys', 'POST', array( 'public_key' => $pair['pk'] ) );
+		if ( is_wp_error( $result ) ) {
+			if ( 'rest_no_route' === $result->get_error_code() || false !== strpos( $result->get_error_message(), '404' ) ) {
+				return new WP_Error( 'helpdesk_hero_keys', __( 'The site runs an older Helpdesk Hero. Ask the customer to update it to version 2.1 or later, then try again.', 'helpdesk-hero-hub' ) );
+			}
+			return $result;
+		}
+		$peer = (string) ( $result['public_key'] ?? '' );
+		if ( ! Helpdesk_Hero_Hub_Crypto::valid_public_key( $peer ) ) {
+			return new WP_Error( 'helpdesk_hero_keys', __( 'The site didn’t send a valid key. Nothing was changed.', 'helpdesk-hero-hub' ) );
+		}
+		unset( $current['old'] );
+		self::save_creds(
+			(int) $site['id'],
+			array(
+				'sk'        => $pair['sk'],
+				'pk'        => $pair['pk'],
+				'peer'      => $peer,
+				'initiated' => true,
+				'old'       => $current,
+			)
+		);
+		self::log_raw( (int) $site['id'], 0, 'keys_rotated', array( 'by' => self::agent_name() ) );
+		return true;
 	}
 
 	/**
@@ -254,7 +436,7 @@ final class Helpdesk_Hero_Hub {
 		if ( 'active' !== $site['status'] || '' === $site['secret'] ) {
 			return new WP_Error( 'helpdesk_hero_site', __( 'This site is not connected.', 'helpdesk-hero-hub' ) );
 		}
-		$result = Helpdesk_Hero_Hub_Signer::request( $site['endpoint'], $route, $method, $data, (string) $site['id'], $site['secret'], $timeout );
+		$result = Helpdesk_Hero_Hub_Signer::request( $site['endpoint'], $route, $method, $data, (string) $site['id'], self::creds( $site ), $timeout );
 		if ( ! is_wp_error( $result ) ) {
 			self::update_site( (int) $site['id'], array( 'last_seen' => Helpdesk_Hero_Hub_DB::now() ) );
 		}
@@ -349,12 +531,158 @@ final class Helpdesk_Hero_Hub {
 	}
 
 	/**
-	 * Tickets for the inbox.
+	 * Custom statuses the team defined (Helpdesk Hero Pro). Each one belongs to a base status
+	 * (open, pending or closed), which still decides what happens: closing ends access and asks
+	 * for a rating, "waiting on customer" pauses the SLA clock.
 	 *
-	 * @param array $args status ('' | active | closed), site_id, search, limit.
-	 * @return array[]
+	 * @return array[] { id, label, color, base }
 	 */
-	public static function tickets( array $args = array() ) {
+	public static function custom_statuses() {
+		/**
+		 * Filters the custom ticket statuses.
+		 *
+		 * @param array[] $statuses { id, label, color, base }.
+		 */
+		$list = (array) apply_filters( 'helpdesk_hero_hub_custom_statuses', array() );
+		$out  = array();
+		foreach ( $list as $s ) {
+			if ( ! empty( $s['id'] ) && ! empty( $s['label'] ) && in_array( $s['base'] ?? '', array( 'open', 'pending', 'closed' ), true ) ) {
+				$out[] = array(
+					'id'     => sanitize_key( $s['id'] ),
+					'label'  => (string) $s['label'],
+					'color'  => (string) ( $s['color'] ?? '' ),
+					'base'   => $s['base'],
+					'public' => ! empty( $s['public'] ),
+				);
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * What a customer may see about time spent for them (Helpdesk Hero Pro), or null.
+	 *
+	 * @param array $site Site.
+	 * @return array|null { month, retainer_hours, used_minutes, month_minutes, tickets: { hub_ticket_id: minutes } }
+	 */
+	public static function site_usage( array $site ) {
+		/**
+		 * Filters the usage summary sent to a customer's site (null = not shown).
+		 *
+		 * @param array|null $usage Usage.
+		 * @param array      $site  Site.
+		 */
+		$usage = apply_filters( 'helpdesk_hero_hub_site_usage', null, $site );
+		return is_array( $usage ) ? $usage : null;
+	}
+
+	/**
+	 * Services the team offers (Helpdesk Hero Pro: Time & billing), for labelling tickets.
+	 *
+	 * @return array[] { id, name, color }
+	 */
+	public static function services() {
+		/**
+		 * Filters the services tickets can be filed under.
+		 *
+		 * @param array[] $services { id, name, color }.
+		 */
+		return (array) apply_filters( 'helpdesk_hero_hub_services', array() );
+	}
+
+	/**
+	 * A service by ID, for display (or null).
+	 *
+	 * @param string $id ID.
+	 * @return array|null { id, name, color }
+	 */
+	public static function service( $id ) {
+		if ( '' === (string) $id ) {
+			return null;
+		}
+		foreach ( self::services() as $s ) {
+			if ( ( $s['id'] ?? '' ) === $id ) {
+				return array(
+					'id'    => (string) $s['id'],
+					'name'  => (string) $s['name'],
+					'color' => (string) ( $s['color'] ?? '' ),
+				);
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * A custom status by ID (or null).
+	 *
+	 * @param string $id ID.
+	 * @return array|null
+	 */
+	public static function custom_status( $id ) {
+		if ( '' === (string) $id ) {
+			return null;
+		}
+		foreach ( self::custom_statuses() as $s ) {
+			if ( $s['id'] === $id ) {
+				return $s;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Where a ticket stands against its service level agreement. Deadlines are set by Helpdesk
+	 * Hero Pro; without them there's nothing to show.
+	 *
+	 * @param array $t Ticket row.
+	 * @return array|null { stage: respond|resolve, due (ISO), state: ok|soon|breached|paused|met }
+	 */
+	public static function sla_state( array $t ) {
+		if ( empty( $t['respond_due'] ) && empty( $t['resolve_due'] ) ) {
+			return null;
+		}
+		if ( 'closed' === $t['status'] ) {
+			$late = ! empty( $t['resolve_due'] ) && ! empty( $t['closed_at'] ) && strcmp( (string) $t['closed_at'], (string) $t['resolve_due'] ) > 0;
+			return array(
+				'stage' => 'resolve',
+				'due'   => ! empty( $t['resolve_due'] ) ? gmdate( 'c', strtotime( $t['resolve_due'] . ' UTC' ) ) : null,
+				'state' => $late ? 'breached' : 'met',
+			);
+		}
+		$stage = empty( $t['first_response_at'] ) && ! empty( $t['respond_due'] ) ? 'respond' : 'resolve';
+		$due   = 'respond' === $stage ? $t['respond_due'] : $t['resolve_due'];
+		if ( empty( $due ) ) {
+			return null;
+		}
+		if ( 'resolve' === $stage && ! empty( $t['sla_paused_at'] ) ) {
+			$state = 'paused';
+		} else {
+			$left  = strtotime( $due . ' UTC' ) - time();
+			$state = $left < 0 ? 'breached' : ( $left < HOUR_IN_SECONDS ? 'soon' : 'ok' );
+		}
+		return array(
+			'stage' => $stage,
+			'due'   => gmdate( 'c', strtotime( $due . ' UTC' ) ),
+			'state' => $state,
+		);
+	}
+
+	/**
+	 * Sort keys for the inbox.
+	 *
+	 * @return string[]
+	 */
+	public static function ticket_sorts() {
+		return array( 'updated', 'created', 'priority', 'status', 'health', 'site', 'customer', 'tier', 'due' );
+	}
+
+	/**
+	 * WHERE clause and values for an inbox query.
+	 *
+	 * @param array $args See tickets().
+	 * @return array{0:string, 1:array}
+	 */
+	private static function ticket_where( array $args ) {
 		global $wpdb;
 		$where  = array( '1=1' );
 		$params = array();
@@ -366,18 +694,164 @@ final class Helpdesk_Hero_Hub {
 			$where[]  = 't.status = %s';
 			$params[] = $status;
 		}
+		if ( ! empty( $args['custom_status'] ) ) {
+			$where[]  = 't.custom_status = %s';
+			$params[] = (string) $args['custom_status'];
+		}
 		if ( ! empty( $args['site_id'] ) ) {
 			$where[]  = 't.site_id = %d';
 			$params[] = (int) $args['site_id'];
 		}
+		if ( isset( $args['assignee'] ) && '' !== (string) $args['assignee'] ) {
+			$where[]  = 't.assignee_id = %d';
+			$params[] = (int) $args['assignee'];
+		}
+		if ( ! empty( $args['closed_before'] ) && preg_match( '/^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$/', (string) $args['closed_before'] ) ) {
+			$where[]  = "t.status = 'closed' AND COALESCE(t.closed_at, t.updated_at) < %s";
+			$params[] = (string) $args['closed_before'];
+		}
+		if ( ! empty( $args['tag'] ) ) {
+			$where[]  = 't.tags LIKE %s';
+			$params[] = '%' . $wpdb->esc_like( '"' . sanitize_key( (string) $args['tag'] ) . '"' ) . '%';
+		}
+		if ( ! empty( $args['rating_max'] ) ) {
+			$where[]  = 't.rating BETWEEN 1 AND %d';
+			$params[] = (int) $args['rating_max'];
+		}
+		if ( ! empty( $args['rating_min'] ) ) {
+			$where[]  = 't.rating >= %d';
+			$params[] = (int) $args['rating_min'];
+		}
+		if ( isset( $args['category'] ) && '' !== (string) $args['category'] ) {
+			// "none" = tickets without a category.
+			$where[]  = 't.category = %s';
+			$params[] = 'none' === $args['category'] ? '' : (string) $args['category'];
+		}
+		if ( 'ending' === ( $args['access'] ?? '' ) ) {
+			// Access that ends within a day.
+			$where[]  = "t.status <> 'closed' AND t.access_expires BETWEEN %s AND %s";
+			$params[] = Helpdesk_Hero_Hub_DB::now();
+			$params[] = Helpdesk_Hero_Hub_DB::now( DAY_IN_SECONDS );
+		} elseif ( ! empty( $args['access'] ) ) {
+			$where[]  = "t.status <> 'closed' AND t.access_expires > %s";
+			$params[] = Helpdesk_Hero_Hub_DB::now();
+		}
+		if ( ! empty( $args['bookmarked'] ) ) {
+			// The current person's bookmarks.
+			$marks   = self::bookmarks();
+			$where[] = $marks ? 't.id IN (' . implode( ',', array_map( 'intval', $marks ) ) . ')' : '0 = 1';
+		}
+		if ( ! empty( $args['unread'] ) ) {
+			$where[] = "t.status <> 'closed' AND t.customer_at IS NOT NULL AND ( t.viewed_at IS NULL OR t.viewed_at < t.customer_at )";
+		}
+		if ( ! empty( $args['sla'] ) ) {
+			$now = Helpdesk_Hero_Hub_DB::now();
+			if ( 'overdue' === $args['sla'] ) {
+				$where[]  = "t.status <> 'closed' AND ( ( t.first_response_at IS NULL AND t.respond_due < %s ) OR ( t.sla_paused_at IS NULL AND t.resolve_due < %s ) )";
+				$params[] = $now;
+				$params[] = $now;
+			} elseif ( 'soon' === $args['sla'] ) {
+				$soon     = Helpdesk_Hero_Hub_DB::now( HOUR_IN_SECONDS );
+				$where[]  = "t.status <> 'closed' AND ( ( t.first_response_at IS NULL AND t.respond_due BETWEEN %s AND %s ) OR ( t.sla_paused_at IS NULL AND t.resolve_due BETWEEN %s AND %s ) )";
+				$params   = array_merge( $params, array( $now, $soon, $now, $soon ) );
+			}
+		}
+		if ( ! empty( $args['priority'] ) && in_array( $args['priority'], array( 'low', 'normal', 'high', 'urgent' ), true ) ) {
+			$where[]  = 't.priority = %s';
+			$params[] = $args['priority'];
+		}
+		foreach ( array( 'from' => '>=', 'to' => '<=' ) as $key => $op ) {
+			if ( ! empty( $args[ $key ] ) && preg_match( '/^\d{4}-\d{2}-\d{2}$/', (string) $args[ $key ] ) ) {
+				$where[]  = "t.created_at $op %s";
+				$params[] = $args[ $key ] . ( 'to' === $key ? ' 23:59:59' : ' 00:00:00' );
+			}
+		}
+		if ( isset( $args['service'] ) && '' !== (string) $args['service'] ) {
+			$where[]  = 't.service = %s';
+			$params[] = 'none' === $args['service'] ? '' : (string) $args['service'];
+		}
+		if ( ! empty( $args['tier'] ) ) {
+			$where[]  = 's.tier = %s';
+			$params[] = (string) $args['tier'];
+		}
+		if ( empty( $args['merged'] ) ) {
+			$where[] = 't.merged_into = 0';
+		}
 		if ( ! empty( $args['search'] ) ) {
 			$like     = '%' . $wpdb->esc_like( $args['search'] ) . '%';
-			$where[]  = '(t.subject LIKE %s OR t.customer_email LIKE %s OR s.name LIKE %s OR s.url LIKE %s)';
-			$params   = array_merge( $params, array( $like, $like, $like, $like ) );
+			$where[]  = '(t.subject LIKE %s OR t.customer_email LIKE %s OR t.customer_name LIKE %s OR s.name LIKE %s OR s.label LIKE %s OR s.url LIKE %s' . ( ctype_digit( (string) $args['search'] ) ? ' OR t.id = %d' : '' ) . ')';
+			$params   = array_merge( $params, array( $like, $like, $like, $like, $like, $like ) );
+			if ( ctype_digit( (string) $args['search'] ) ) {
+				$params[] = (int) $args['search'];
+			}
 		}
-		$params[] = (int) ( $args['limit'] ?? 100 );
-		$params   = array_merge( array( Helpdesk_Hero_Hub_DB::table( 'tickets' ), Helpdesk_Hero_Hub_DB::table( 'sites' ) ), $params );
-		$sql      = 'SELECT t.id, t.site_id, t.subject, t.status, t.priority, t.customer_name, t.customer_email, t.flags, t.helpdesk, t.helpdesk_id, t.helpdesk_number, t.access_expires, t.channel, t.tags, t.rating, t.category, t.customer_at, t.viewed_at, t.created_at, t.updated_at, s.name AS site_name, s.url AS site_url FROM %i t LEFT JOIN %i s ON s.id = t.site_id WHERE ' . implode( ' AND ', $where ) . ' ORDER BY t.updated_at DESC LIMIT %d';
+		return array( implode( ' AND ', $where ), $params );
+	}
+
+	/**
+	 * ORDER BY clause for an inbox query (fixed SQL plus values for prepare()).
+	 *
+	 * @param string $orderby Sort key.
+	 * @param string $order   asc | desc.
+	 * @return array{0:string, 1:array}
+	 */
+	private static function ticket_order( $orderby, $order ) {
+		$dir    = 'asc' === strtolower( (string) $order ) ? 'ASC' : 'DESC';
+		$params = array();
+		switch ( $orderby ) {
+			case 'created':
+				$sql = "t.created_at $dir";
+				break;
+			case 'priority':
+				$sql = "FIELD(t.priority, 'low', 'normal', 'high', 'urgent') $dir, t.updated_at DESC";
+				break;
+			case 'status':
+				$sql = "FIELD(t.status, 'open', 'pending', 'closed') $dir, t.updated_at DESC";
+				break;
+			case 'health':
+				$sql = "t.health $dir, t.updated_at DESC";
+				break;
+			case 'site':
+				$sql = "COALESCE(NULLIF(s.name, ''), s.label) $dir";
+				break;
+			case 'customer':
+				$sql = "COALESCE(NULLIF(t.customer_name, ''), t.customer_email) $dir";
+				break;
+			case 'tier':
+				// Tiers sort by their place in the team's list (first = most important). Sites
+				// without a tier come last.
+				$ids = array_reverse( wp_list_pluck( Helpdesk_Hero_Hub_Tiers::all(), 'id' ) );
+				if ( $ids ) {
+					$sql    = 'FIELD(s.tier, ' . implode( ', ', array_fill( 0, count( $ids ), '%s' ) ) . ") $dir, t.updated_at DESC";
+					$params = $ids;
+				} else {
+					$sql = 't.updated_at DESC';
+				}
+				break;
+			case 'due':
+				// Earliest SLA deadline first; tickets without one last.
+				$sql = "(t.respond_due IS NULL AND t.resolve_due IS NULL) ASC, LEAST(COALESCE(t.respond_due, '9999-12-31'), COALESCE(t.resolve_due, '9999-12-31')) $dir";
+				break;
+			default:
+				$sql = "t.updated_at $dir";
+		}
+		return array( $sql . ', t.id DESC', $params );
+	}
+
+	/**
+	 * Tickets for the inbox.
+	 *
+	 * @param array $args status ('' | active | open | pending | closed), custom_status, site_id,
+	 *                    assignee, tier, search, merged (include merged tickets), orderby, order,
+	 *                    limit, offset.
+	 * @return array[]
+	 */
+	public static function tickets( array $args = array() ) {
+		global $wpdb;
+		list( $where, $params )  = self::ticket_where( $args );
+		list( $order, $oparams ) = self::ticket_order( (string) ( $args['orderby'] ?? 'updated' ), (string) ( $args['order'] ?? 'desc' ) );
+		$params   = array_merge( array( Helpdesk_Hero_Hub_DB::table( 'tickets' ), Helpdesk_Hero_Hub_DB::table( 'sites' ) ), $params, $oparams, array( (int) ( $args['limit'] ?? 100 ), (int) ( $args['offset'] ?? 0 ) ) );
+		$sql      = 'SELECT t.id, t.site_id, t.subject, t.status, t.custom_status, t.service, t.priority, t.health, t.assignee_id, t.merged_into, t.customer_name, t.customer_email, t.flags, t.helpdesk, t.helpdesk_id, t.helpdesk_number, t.access_expires, t.channel, t.tags, t.rating, t.category, t.customer_at, t.viewed_at, t.respond_due, t.resolve_due, t.sla_paused_at, t.first_response_at, t.closed_at, t.created_at, t.updated_at, s.name AS site_name, s.label AS site_label, s.url AS site_url, s.tier AS site_tier FROM %i t LEFT JOIN %i s ON s.id = t.site_id WHERE ' . $where . ' ORDER BY ' . $order . ' LIMIT %d OFFSET %d';
 		// $sql is built only from fixed strings and placeholders; every value goes through prepare(), the table name through %i.
 		$rows     = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		foreach ( $rows as &$row ) {
@@ -385,6 +859,20 @@ final class Helpdesk_Hero_Hub {
 			$row['tags']  = $row['tags'] ? (array) json_decode( $row['tags'], true ) : array();
 		}
 		return $rows;
+	}
+
+	/**
+	 * Number of tickets matching an inbox query.
+	 *
+	 * @param array $args See tickets().
+	 * @return int
+	 */
+	public static function count_tickets( array $args = array() ) {
+		global $wpdb;
+		list( $where, $params ) = self::ticket_where( $args );
+		$sql = 'SELECT COUNT(*) FROM %i t LEFT JOIN %i s ON s.id = t.site_id WHERE ' . $where;
+		// $sql is built only from fixed strings and placeholders.
+		return (int) $wpdb->get_var( $wpdb->prepare( $sql, array_merge( array( Helpdesk_Hero_Hub_DB::table( 'tickets' ), Helpdesk_Hero_Hub_DB::table( 'sites' ) ), $params ) ) ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter, WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 	}
 
 	/**
@@ -424,6 +912,7 @@ final class Helpdesk_Hero_Hub {
 		$access  = (array) ( $payload['access'] ?? array() );
 		$now     = Helpdesk_Hero_Hub_DB::now();
 		$channel = 'email' === ( $payload['channel'] ?? '' ) ? 'email' : 'hub';
+		$flags   = self::clean_flags( (array) ( $payload['flags'] ?? array() ) );
 		$wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
 			Helpdesk_Hero_Hub_DB::table( 'tickets' ),
 			array(
@@ -436,10 +925,12 @@ final class Helpdesk_Hero_Hub {
 				'customer_name'    => sanitize_text_field( (string) ( $contact['name'] ?? '' ) ),
 				'customer_email'   => sanitize_email( (string) ( $contact['email'] ?? '' ) ),
 				'description'      => $body . ( ! empty( $payload['page_url'] ) ? "\n\n" . __( 'Page:', 'helpdesk-hero-hub' ) . ' ' . esc_url_raw( $payload['page_url'] ) : '' ),
-				'diagnostics'      => wp_json_encode( Helpdesk_Hero_Hub_Redactor::deep( (array) ( $payload['diagnostics'] ?? array() ) ) ),
-				'flags'            => wp_json_encode( self::clean_flags( (array) ( $payload['flags'] ?? array() ) ) ),
+				'diagnostics'      => wp_json_encode( Helpdesk_Hero_Hub_Redactor::deep( array_merge( (array) ( $payload['diagnostics'] ?? array() ), array_filter( array( 'pinpoints' => self::clean_pinpoints( $payload, (string) $site['url'], 'opening' ) ) ) ) ) ),
+				'flags'            => wp_json_encode( $flags ),
+				'health'           => Helpdesk_Hero_Hub_DB::health_score( $flags ),
 				'access_expires'   => ! empty( $access['active'] ) && ! empty( $access['expires_at'] ) ? sanitize_text_field( $access['expires_at'] ) : null,
 				'channel'          => $channel,
+				'fields'           => self::clean_fields( (array) ( $payload['fields'] ?? array() ) ),
 				'customer_at'      => $now,
 				'created_at'       => $now,
 				'updated_at'       => $now,
@@ -447,6 +938,9 @@ final class Helpdesk_Hero_Hub {
 		);
 		$ticket_id = (int) $wpdb->insert_id;
 		$ticket    = self::ticket( $ticket_id );
+		if ( ! empty( $payload['attachments'] ) && Helpdesk_Hero_Hub_Attachments::config()['enabled'] ) {
+			Helpdesk_Hero_Hub_Attachments::from_site( $ticket, (array) $payload['attachments'], 'opening' );
+		}
 
 		/**
 		 * Fires when a ticket arrives at the hub, before it is sent to the help desk.
@@ -502,6 +996,326 @@ final class Helpdesk_Hero_Hub {
 		return array(
 			'hub_ticket_id' => $ticket_id,
 			'reference'     => $reference,
+		);
+	}
+
+	/**
+	 * Custom ticket fields the team defined (Helpdesk Hero Pro).
+	 *
+	 * @return array[] { id, label, type: text|textarea|number|url|select|checkbox, options[], required, help }
+	 */
+	public static function field_definitions() {
+		/**
+		 * Filters the custom fields customers fill in on new tickets.
+		 *
+		 * @param array[] $fields Definitions.
+		 */
+		return (array) apply_filters( 'helpdesk_hero_hub_ticket_fields', array() );
+	}
+
+	/**
+	 * Keep answers to known fields, cleaned by type.
+	 *
+	 * @param array $in Answers { id: value }.
+	 * @return string|null JSON.
+	 */
+	private static function clean_fields( array $in ) {
+		$out = array();
+		foreach ( self::field_definitions() as $f ) {
+			$id = (string) ( $f['id'] ?? '' );
+			if ( '' === $id || ! array_key_exists( $id, $in ) ) {
+				continue;
+			}
+			$v = $in[ $id ];
+			switch ( $f['type'] ?? 'text' ) {
+				case 'checkbox':
+					$v = ! empty( $v );
+					break;
+				case 'number':
+					$v = is_numeric( $v ) ? $v + 0 : null;
+					break;
+				case 'url':
+					$v = esc_url_raw( (string) $v );
+					break;
+				case 'select':
+					$v = in_array( (string) $v, (array) ( $f['options'] ?? array() ), true ) ? (string) $v : null;
+					break;
+				case 'textarea':
+					$v = substr( sanitize_textarea_field( (string) $v ), 0, 5000 );
+					break;
+				default:
+					$v = substr( sanitize_text_field( (string) $v ), 0, 500 );
+			}
+			if ( null !== $v && '' !== $v ) {
+				$out[ $id ] = $v;
+			}
+		}
+		return $out ? wp_json_encode( $out ) : null;
+	}
+
+	/**
+	 * A ticket's answers with their labels, in the order the fields are defined.
+	 *
+	 * @param array $ticket Ticket.
+	 * @return array[] { id, label, value }
+	 */
+	public static function field_values( array $ticket ) {
+		$values = $ticket['fields'] ? (array) json_decode( (string) $ticket['fields'], true ) : array();
+		$out    = array();
+		$known  = array();
+		foreach ( self::field_definitions() as $f ) {
+			$known[ $f['id'] ] = true;
+			if ( array_key_exists( $f['id'], $values ) ) {
+				$out[] = array(
+					'id'    => $f['id'],
+					'label' => $f['label'],
+					'value' => is_bool( $values[ $f['id'] ] ) ? ( $values[ $f['id'] ] ? __( 'Yes', 'helpdesk-hero-hub' ) : __( 'No', 'helpdesk-hero-hub' ) ) : (string) $values[ $f['id'] ],
+				);
+			}
+		}
+		// Answers to fields that were removed since.
+		foreach ( $values as $id => $value ) {
+			if ( ! isset( $known[ $id ] ) ) {
+				$out[] = array(
+					'id'    => (string) $id,
+					'label' => (string) $id,
+					'value' => is_bool( $value ) ? ( $value ? __( 'Yes', 'helpdesk-hero-hub' ) : __( 'No', 'helpdesk-hero-hub' ) ) : (string) $value,
+				);
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * Merge a ticket into another of the same site. The merged ticket closes; its conversation
+	 * shows in the other, and the customer's later replies go there too. Support access tied
+	 * to it stays as it is.
+	 *
+	 * @param array $source Ticket to merge.
+	 * @param array $target Ticket to keep.
+	 * @return true|WP_Error
+	 */
+	public static function merge( array $source, array $target ) {
+		if ( (int) $source['id'] === (int) $target['id'] ) {
+			return new WP_Error( 'helpdesk_hero_hub_merge', __( 'A ticket can’t be merged into itself.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
+		}
+		if ( (int) $source['site_id'] !== (int) $target['site_id'] ) {
+			return new WP_Error( 'helpdesk_hero_hub_merge', __( 'Only tickets from the same site can be merged.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
+		}
+		if ( (int) $source['merged_into'] || (int) $target['merged_into'] ) {
+			return new WP_Error( 'helpdesk_hero_hub_merge', __( 'One of these tickets was already merged.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
+		}
+		global $wpdb;
+		// Tickets merged into the source move along to the target.
+		$wpdb->update( Helpdesk_Hero_Hub_DB::table( 'tickets' ), array( 'merged_into' => (int) $target['id'] ), array( 'merged_into' => (int) $source['id'] ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		self::update_ticket(
+			(int) $source['id'],
+			array(
+				'merged_into' => (int) $target['id'],
+				'status'      => 'closed',
+				'closed_at'   => Helpdesk_Hero_Hub_DB::now(),
+			)
+		);
+		$by = wp_get_current_user()->display_name;
+		self::log(
+			$source,
+			'merged_into',
+			array(
+				'id'      => (int) $target['id'],
+				'subject' => $target['subject'],
+				'by'      => $by,
+			)
+		);
+		self::log(
+			$target,
+			'merged_from',
+			array(
+				'id'      => (int) $source['id'],
+				'subject' => $source['subject'],
+				'by'      => $by,
+			)
+		);
+		// The customer's site shows the merged ticket as closed, pointing to the other one.
+		self::enqueue(
+			(int) $source['site_id'],
+			(int) $source['id'],
+			'merged',
+			array(
+				'into'    => (int) $target['id'],
+				'subject' => $target['subject'],
+			)
+		);
+		self::update_ticket( (int) $target['id'], array( 'customer_at' => $target['customer_at'] ) );
+		/**
+		 * Fires after a ticket is merged into another.
+		 *
+		 * @param array $source Merged ticket.
+		 * @param array $target Ticket kept.
+		 */
+		// What the merged ticket carried stays with the conversation: its tags join the kept
+		// ticket's, and custom field answers fill in what the kept ticket doesn't have yet.
+		// (Its messages, files and problem spots already show in the kept ticket.)
+		$target = self::ticket( (int) $target['id'] );
+		$tags   = array_values( array_unique( array_merge( (array) $target['tags'], (array) $source['tags'] ) ) );
+		if ( $tags !== (array) $target['tags'] ) {
+			self::set_tags( $target, $tags );
+		}
+		$mine   = $target['fields'] ? (array) json_decode( (string) $target['fields'], true ) : array();
+		$theirs = $source['fields'] ? (array) json_decode( (string) $source['fields'], true ) : array();
+		if ( array_diff_key( $theirs, $mine ) ) {
+			self::update_ticket( (int) $target['id'], array( 'fields' => wp_json_encode( $mine + $theirs ) ) );
+		}
+		do_action( 'helpdesk_hero_hub_ticket_merged', $source, $target );
+		return true;
+	}
+
+	/**
+	 * Tickets merged into a ticket.
+	 *
+	 * @param int $id Ticket.
+	 * @return array[] { id, subject }
+	 */
+	public static function merged_from( $id ) {
+		global $wpdb;
+		return $wpdb->get_results( $wpdb->prepare( 'SELECT id, subject, customer_name, customer_email, description, created_at FROM %i WHERE merged_into = %d ORDER BY id ASC', Helpdesk_Hero_Hub_DB::table( 'tickets' ), $id ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+	}
+
+	/**
+	 * The current person's bookmarked tickets.
+	 *
+	 * @return int[]
+	 */
+	public static function bookmarks() {
+		$marks = get_user_meta( get_current_user_id(), 'helpdesk_hero_hub_bookmarks', true );
+		return is_array( $marks ) ? array_values( array_map( 'intval', $marks ) ) : array();
+	}
+
+	/**
+	 * Bookmark a ticket (or remove the bookmark) for the current person.
+	 *
+	 * @param int  $ticket_id Ticket.
+	 * @param bool $on        Bookmarked.
+	 * @return bool Bookmarked now.
+	 */
+	public static function set_bookmark( $ticket_id, $on ) {
+		$marks = array_diff( self::bookmarks(), array( (int) $ticket_id ) );
+		if ( $on ) {
+			$marks[] = (int) $ticket_id;
+		}
+		update_user_meta( get_current_user_id(), 'helpdesk_hero_hub_bookmarks', array_slice( array_values( $marks ), -500 ) );
+		return (bool) $on;
+	}
+
+	/**
+	 * A ticket's problem spots (Pinpoint), oldest first. Tickets from before 2.1 had one.
+	 *
+	 * @param array $ticket Ticket row (diagnostics decoded).
+	 * @return array[]
+	 */
+	public static function pinpoints( array $ticket ) {
+		$d = (array) ( $ticket['diagnostics'] ?? array() );
+		if ( ! empty( $d['pinpoints'] ) && is_array( $d['pinpoints'] ) ) {
+			return array_values( $d['pinpoints'] );
+		}
+		return ! empty( $d['pinpoint']['url'] ) ? array( array_merge( $d['pinpoint'], array( 'source' => 'opening' ) ) ) : array();
+	}
+
+	/**
+	 * Add problem spots to a ticket.
+	 *
+	 * @param int     $ticket_id Ticket.
+	 * @param array[] $spots     Clean spots.
+	 */
+	public static function add_pinpoints( $ticket_id, array $spots ) {
+		$ticket = self::ticket( (int) $ticket_id );
+		if ( ! $ticket || ! $spots ) {
+			return;
+		}
+		$d = (array) $ticket['diagnostics'];
+		unset( $d['pinpoint'] );
+		$d['pinpoints'] = array_slice( array_merge( self::pinpoints( $ticket ), $spots ), -50 );
+		self::update_ticket( (int) $ticket_id, array( 'diagnostics' => $d ) );
+	}
+
+	/**
+	 * Problem spots from a site's payload ("pinpoints", or "pinpoint" from 2.1 sites), cleaned,
+	 * at most 5 at a time.
+	 *
+	 * @param array  $payload  Payload.
+	 * @param string $site_url Site address.
+	 * @param string $source   "opening" or the history item of the reply they came with.
+	 * @return array[]
+	 */
+	public static function clean_pinpoints( array $payload, $site_url, $source ) {
+		$raw = isset( $payload['pinpoints'] ) && is_array( $payload['pinpoints'] ) ? $payload['pinpoints'] : ( ! empty( $payload['pinpoint'] ) ? array( $payload['pinpoint'] ) : array() );
+		$out = array();
+		foreach ( array_slice( $raw, 0, 5 ) as $pin ) {
+			$clean = self::clean_pinpoint( $pin, $site_url );
+			if ( $clean ) {
+				$out[] = array_merge(
+					$clean,
+					array(
+						'source' => sanitize_key( (string) $source ),
+						'time'   => gmdate( 'c' ),
+					)
+				);
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * Pinpoint from a site: the spot the customer picked. Only pages of that site are kept, so
+	 * "Open and highlight" never sends support elsewhere.
+	 *
+	 * @param mixed  $pin      Raw.
+	 * @param string $site_url Site address.
+	 * @return array|null
+	 */
+	public static function clean_pinpoint( $pin, $site_url ) {
+		if ( ! is_array( $pin ) || empty( $pin['id'] ) || empty( $pin['url'] ) ) {
+			return null;
+		}
+		$url  = esc_url_raw( (string) $pin['url'], array( 'http', 'https' ) );
+		$host = wp_parse_url( $site_url, PHP_URL_HOST );
+		if ( '' === $url || ! $host || wp_parse_url( $url, PHP_URL_HOST ) !== $host ) {
+			return null;
+		}
+		$text = static function ( $v, $len = 300 ) {
+			return substr( sanitize_text_field( (string) $v ), 0, $len );
+		};
+		$list = static function ( $items, array $keys ) use ( $text ) {
+			$out = array();
+			foreach ( array_slice( (array) $items, 0, 20 ) as $item ) {
+				$row = array();
+				foreach ( $keys as $k => $type ) {
+					$v         = ( (array) $item )[ $k ] ?? '';
+					$row[ $k ] = 'int' === $type ? (int) $v : $text( $v );
+				}
+				$out[] = $row;
+			}
+			return $out;
+		};
+		$rect = (array) ( $pin['rect'] ?? array() );
+		$view = (array) ( $pin['viewport'] ?? array() );
+		return array(
+			'id'       => substr( sanitize_key( (string) $pin['id'] ), 0, 32 ),
+			'url'      => $url,
+			'title'    => $text( $pin['title'] ?? '', 200 ),
+			'selector' => $text( $pin['selector'] ?? '', 500 ),
+			'kind'     => 'area' === ( $pin['kind'] ?? '' ) ? 'area' : 'element',
+			'label'    => $text( $pin['label'] ?? '', 80 ),
+			'text'     => $text( $pin['text'] ?? '', 200 ),
+			'rect'     => array_map( 'intval', array_intersect_key( $rect + array( 'x' => 0, 'y' => 0, 'w' => 0, 'h' => 0 ), array_flip( array( 'x', 'y', 'w', 'h' ) ) ) ),
+			'viewport' => array(
+				'w'   => (int) ( $view['w'] ?? 0 ),
+				'h'   => (int) ( $view['h'] ?? 0 ),
+				'dpr' => (float) ( $view['dpr'] ?? 1 ),
+			),
+			'browser'  => $text( $pin['browser'] ?? '' ),
+			'area'     => 'admin' === ( $pin['area'] ?? '' ) ? 'admin' : 'front',
+			'errors'   => $list( $pin['errors'] ?? array(), array( 'message' => 'text', 'source' => 'text', 'line' => 'int' ) ),
+			'requests' => $list( $pin['requests'] ?? array(), array( 'url' => 'text', 'status' => 'int', 'method' => 'text' ) ),
 		);
 	}
 
@@ -631,15 +1445,29 @@ final class Helpdesk_Hero_Hub {
 	/**
 	 * A customer replied from their dashboard.
 	 *
-	 * @param array  $ticket Ticket.
-	 * @param string $body   Text.
-	 * @param string $author Name.
+	 * @param array  $ticket      Ticket.
+	 * @param string $body        Text.
+	 * @param string $author      Name.
+	 * @param array  $attachments Files the site sent: [ { id, name, size, type, sha256 } ].
 	 * @return true|WP_Error
 	 */
-	public static function customer_reply( array $ticket, $body, $author ) {
+	public static function customer_reply( array $ticket, $body, $author, array $attachments = array(), array $pins = array() ) {
 		$body = sanitize_textarea_field( $body );
-		self::log( $ticket, 'customer_reply', array( 'author' => sanitize_text_field( $author ), 'body' => $body, 'created_at' => gmdate( 'c' ) ) );
-		$status   = 'closed' === $ticket['status'] ? 'open' : $ticket['status'];
+		$item = self::log_raw( (int) $ticket['site_id'], (int) $ticket['id'], 'customer_reply', array( 'author' => sanitize_text_field( $author ), 'body' => $body, 'created_at' => gmdate( 'c' ) ) );
+		if ( $pins ) {
+			$site  = self::site( (int) $ticket['site_id'] );
+			$spots = $site ? self::clean_pinpoints( array( 'pinpoints' => $pins ), (string) $site['url'], (string) $item ) : array();
+			if ( $spots ) {
+				self::add_pinpoints( (int) $ticket['id'], $spots );
+				self::update_log( $item, array( 'spots' => count( $spots ) ) );
+			}
+		}
+		if ( $attachments && Helpdesk_Hero_Hub_Attachments::config()['enabled'] ) {
+			$files = Helpdesk_Hero_Hub_Attachments::from_site( $ticket, $attachments, (string) $item );
+			if ( $files ) {
+				self::update_log( $item, array( 'attachments' => $files ) );
+			}
+		}
 		$helpdesk = Helpdesk_Hero_Hub_Helpdesk::for_ticket( $ticket );
 		if ( $helpdesk ) {
 			$thread = $helpdesk->customer_reply( $ticket, $body );
@@ -651,24 +1479,31 @@ final class Helpdesk_Hero_Hub {
 			$site = self::site( (int) $ticket['site_id'] );
 			self::notify_team( array_merge( $ticket, array( 'description' => $body ) ), $site ? $site : array( 'name' => '', 'url' => '' ) );
 		}
-		self::update_ticket(
-			(int) $ticket['id'],
-			array(
-				'status'      => 'open' === $status ? 'open' : $status,
-				'customer_at' => Helpdesk_Hero_Hub_DB::now(),
-			)
-		);
+		self::update_ticket( (int) $ticket['id'], array( 'customer_at' => Helpdesk_Hero_Hub_DB::now() ) );
+		// The customer answered, so the ticket is back with the team (also when it was waiting on
+		// them, which used to stay "waiting").
+		if ( 'open' !== $ticket['status'] ) {
+			self::set_status( self::ticket( (int) $ticket['id'] ), 'open', false );
+		}
+		/**
+		 * Fires when a customer replies from their dashboard.
+		 *
+		 * @param array  $ticket Ticket (before the reply).
+		 * @param string $body   Reply.
+		 */
+		do_action( 'helpdesk_hero_hub_customer_replied', $ticket, $body );
 		return true;
 	}
 
 	/**
 	 * An agent replied from the hub.
 	 *
-	 * @param array  $ticket Ticket.
-	 * @param string $body   Text.
+	 * @param array  $ticket      Ticket.
+	 * @param string $body        Text.
+	 * @param array  $attachments Attachment records (Pro).
 	 * @return true|WP_Error
 	 */
-	public static function agent_reply( array $ticket, $body ) {
+	public static function agent_reply( array $ticket, $body, array $attachments = array() ) {
 		$body     = sanitize_textarea_field( $body );
 		$agent    = wp_get_current_user();
 		$thread   = 'hub-' . wp_generate_password( 12, false );
@@ -684,11 +1519,14 @@ final class Helpdesk_Hero_Hub {
 			(int) $ticket['site_id'],
 			(int) $ticket['id'],
 			'reply',
-			array(
-				'author'     => self::agent_name( $agent->ID ),
-				'body'       => $body,
-				'thread_id'  => (string) $thread,
-				'created_at' => gmdate( 'c' ),
+			array_filter(
+				array(
+					'author'      => self::agent_name( $agent->ID ),
+					'body'        => $body,
+					'thread_id'   => (string) $thread,
+					'created_at'  => gmdate( 'c' ),
+					'attachments' => $attachments,
+				)
 			)
 		);
 		self::first_response( $ticket );
@@ -707,6 +1545,9 @@ final class Helpdesk_Hero_Hub {
 	public static function set_status( array $ticket, $status, $to_helpdesk = true ) {
 		$status = in_array( $status, array( 'open', 'pending', 'closed' ), true ) ? $status : 'open';
 		if ( $status === $ticket['status'] ) {
+			if ( '' !== (string) $ticket['custom_status'] ) {
+				self::update_ticket( (int) $ticket['id'], array( 'custom_status' => '' ) );
+			}
 			return;
 		}
 		if ( $to_helpdesk ) {
@@ -718,11 +1559,182 @@ final class Helpdesk_Hero_Hub {
 		self::update_ticket(
 			(int) $ticket['id'],
 			array(
-				'status'    => $status,
-				'closed_at' => 'closed' === $status ? Helpdesk_Hero_Hub_DB::now() : null,
+				'status'        => $status,
+				'custom_status' => '',
+				'closed_at'     => 'closed' === $status ? Helpdesk_Hero_Hub_DB::now() : null,
 			)
 		);
 		self::enqueue( (int) $ticket['site_id'], (int) $ticket['id'], 'status', array( 'status' => $status ) );
+		/**
+		 * Fires after a ticket's status changes.
+		 *
+		 * @param array  $ticket Ticket (before the change).
+		 * @param string $status New status: open | pending | closed.
+		 */
+		do_action( 'helpdesk_hero_hub_status_changed', $ticket, $status );
+	}
+
+	/**
+	 * People on the team (they can open the hub), for assigning tickets.
+	 *
+	 * @return array[] { id, name, supporter }
+	 */
+	public static function team() {
+		$cap   = (string) apply_filters( 'helpdesk_hero_hub_capability', 'manage_options' );
+		$users = get_users(
+			array(
+				'capability__in' => array_unique( array( $cap, 'manage_options' ) ),
+				'fields'         => array( 'ID', 'display_name' ),
+				'number'         => 200,
+				'orderby'        => 'display_name',
+			)
+		);
+		$out = array();
+		foreach ( $users as $u ) {
+			if ( ! user_can( (int) $u->ID, 'helpdesk_hero_hub' ) ) {
+				continue;
+			}
+			$out[] = array(
+				'id'        => (int) $u->ID,
+				'name'      => $u->display_name,
+				'supporter' => self::can_support( (int) $u->ID ),
+			);
+		}
+		/**
+		 * Filters the people tickets can be assigned to.
+		 *
+		 * @param array[] $team { id, name, supporter }.
+		 */
+		return (array) apply_filters( 'helpdesk_hero_hub_team', $out );
+	}
+
+	/**
+	 * Whether the current person wants unassigned tickets assigned to them when they reply
+	 * (on unless they turned it off).
+	 *
+	 * @return bool
+	 */
+	public static function assign_on_reply() {
+		return '0' !== (string) get_user_meta( get_current_user_id(), 'helpdesk_hero_hub_assign_on_reply', true );
+	}
+
+	/**
+	 * Assign a ticket to a team member (0 = nobody).
+	 *
+	 * @param array $ticket  Ticket.
+	 * @param int   $user_id Team member.
+	 * @return true|WP_Error
+	 */
+	public static function assign( array $ticket, $user_id ) {
+		$user_id = (int) $user_id;
+		if ( $user_id && ! in_array( $user_id, wp_list_pluck( self::team(), 'id' ), true ) ) {
+			return new WP_Error( 'helpdesk_hero_hub_assignee', __( 'That person isn’t on your team.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
+		}
+		if ( (int) $ticket['assignee_id'] === $user_id ) {
+			return true;
+		}
+		self::update_ticket(
+			(int) $ticket['id'],
+			array(
+				'assignee_id' => $user_id,
+				'updated_at'  => $ticket['updated_at'],
+			)
+		);
+		$to = $user_id ? get_userdata( $user_id ) : false;
+		self::log(
+			$ticket,
+			'assigned',
+			array(
+				'to'   => $user_id,
+				'name' => $to ? $to->display_name : '',
+				'by'   => wp_get_current_user()->display_name,
+			)
+		);
+		if ( $to && get_current_user_id() !== $user_id && $to->user_email ) {
+			wp_mail(
+				$to->user_email,
+				/* translators: %s: ticket subject */
+				sprintf( __( '[Assigned to you] %s', 'helpdesk-hero-hub' ), $ticket['subject'] ),
+				sprintf(
+					/* translators: 1: person, 2: ticket subject, 3: link */
+					__( "%1\$s assigned you a ticket: %2\$s\n\n%3\$s", 'helpdesk-hero-hub' ),
+					wp_get_current_user()->display_name,
+					$ticket['subject'],
+					self::ticket_url( (int) $ticket['id'] )
+				)
+			);
+		}
+		/**
+		 * Fires when a ticket is assigned.
+		 *
+		 * @param array $ticket  Ticket (before the change).
+		 * @param int   $user_id New assignee (0 = nobody).
+		 */
+		do_action( 'helpdesk_hero_hub_ticket_assigned', $ticket, $user_id );
+		return true;
+	}
+
+	/**
+	 * Internal note on a ticket: for the team only, never sent to the customer.
+	 *
+	 * @param array  $ticket Ticket.
+	 * @param string $body   Text.
+	 * @return int History item ID.
+	 */
+	public static function add_note( array $ticket, $body ) {
+		$user = wp_get_current_user();
+		$id   = self::log_raw(
+			(int) $ticket['site_id'],
+			(int) $ticket['id'],
+			'internal_note',
+			array(
+				'author'    => $user->display_name,
+				'author_id' => (int) $user->ID,
+				'body'      => sanitize_textarea_field( $body ),
+			)
+		);
+		/**
+		 * Fires when someone adds an internal note.
+		 *
+		 * @param array  $ticket Ticket.
+		 * @param string $body   Note.
+		 */
+		do_action( 'helpdesk_hero_hub_internal_note', $ticket, $body );
+		return $id;
+	}
+
+	/**
+	 * Set a custom status (Pro). Its base status applies as usual: closing still ends access.
+	 *
+	 * @param array  $ticket Ticket.
+	 * @param string $id     Custom status ID.
+	 * @return true|WP_Error
+	 */
+	public static function set_custom_status( array $ticket, $id ) {
+		$custom = self::custom_status( sanitize_key( (string) $id ) );
+		if ( ! $custom ) {
+			return new WP_Error( 'helpdesk_hero_hub_status', __( 'Unknown status.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
+		}
+		self::set_status( $ticket, $custom['base'] );
+		self::update_ticket(
+			(int) $ticket['id'],
+			array(
+				'custom_status' => $custom['id'],
+				'updated_at'    => Helpdesk_Hero_Hub_DB::now(),
+			)
+		);
+		self::log( $ticket, 'custom_status', array( 'label' => $custom['label'] ) );
+		// The customer sees this status's name only if the team chose to show it.
+		self::enqueue(
+			(int) $ticket['site_id'],
+			(int) $ticket['id'],
+			'status',
+			array(
+				'status' => $custom['base'],
+				'label'  => $custom['public'] ? $custom['label'] : '',
+			)
+		);
+		return true;
 	}
 
 	/**
@@ -753,6 +1765,13 @@ final class Helpdesk_Hero_Hub {
 		$ids   = array_values( array_intersect( array_map( 'sanitize_key', $tag_ids ), $known ) );
 		self::update_ticket( (int) $ticket['id'], array( 'tags' => $ids ) );
 		self::enqueue( (int) $ticket['site_id'], (int) $ticket['id'], 'tags', array( 'tags' => Helpdesk_Hero_Hub_Tags::resolve( $ids ) ) );
+		/**
+		 * Fires after a ticket's tags change.
+		 *
+		 * @param array    $ticket Ticket (before the change).
+		 * @param string[] $ids    New tag IDs.
+		 */
+		do_action( 'helpdesk_hero_hub_tags_changed', $ticket, $ids );
 	}
 
 	/**
@@ -851,7 +1870,11 @@ final class Helpdesk_Hero_Hub {
 		$user_id   = $user_id ? (int) $user_id : get_current_user_id();
 		$supporter = self::supporter( $user_id );
 		$user      = get_userdata( $user_id );
-		return $supporter ? $supporter['name'] : ( $user ? $user->display_name : '' );
+		if ( $supporter ) {
+			return $supporter['name'];
+		}
+		// Replies sent by automations (no one logged in) come from the team.
+		return $user ? $user->display_name : Helpdesk_Hero_Hub_Settings::team_name();
 	}
 
 	/**
@@ -956,6 +1979,19 @@ final class Helpdesk_Hero_Hub {
 	}
 
 	/**
+	 * Add fields to a history item's payload.
+	 *
+	 * @param int   $id    Item.
+	 * @param array $extra Fields.
+	 */
+	private static function update_log( $id, array $extra ) {
+		global $wpdb;
+		$table   = Helpdesk_Hero_Hub_DB::table( 'outbox' );
+		$payload = (array) json_decode( (string) $wpdb->get_var( $wpdb->prepare( 'SELECT payload FROM %i WHERE id = %d', $table, $id ) ), true ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->update( $table, array( 'payload' => wp_json_encode( array_merge( $payload, $extra ) ) ), array( 'id' => (int) $id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+	}
+
+	/**
 	 * Delivered items for a site after a cursor.
 	 *
 	 * @param int $site_id Site.
@@ -1024,6 +2060,9 @@ final class Helpdesk_Hero_Hub {
 	 */
 	public static function sync( $only_ticket = 0 ) {
 		global $wpdb;
+		if ( ! $only_ticket ) {
+			Helpdesk_Hero_Hub_Attachments::cleanup();
+		}
 		if ( ! Helpdesk_Hero_Hub_Helpdesk::current() ) {
 			return 0;
 		}

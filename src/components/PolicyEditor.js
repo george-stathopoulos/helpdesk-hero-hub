@@ -3,10 +3,16 @@ import { useState } from '@wordpress/element';
 import { Card, Setting, Switch, Segmented, Button } from '../ui/components/ui';
 import { Check, ProBadge } from '../ui/components/kit';
 import Icon from '../ui/components/Icon';
+import PinpointDemo from '../ui/components/PinpointDemo';
 
 const HOURS = [ 1, 4, 8, 24, 48, 72, 168, 336, 720 ];
+// Same value as Helpdesk_Hero_Hub_Policy::PERMANENT: access with no end date.
+export const PERMANENT = 999999;
 
 export function hoursLabel( h ) {
+	if ( h === PERMANENT ) {
+		return __( 'No end date', 'helpdesk-hero-hub' );
+	}
 	if ( h < 24 ) {
 		return sprintf(
 			/* translators: %d: number of hours */
@@ -22,7 +28,7 @@ export function hoursLabel( h ) {
 	);
 }
 
-function HoursSelect( { value, onChange, max, label } ) {
+function HoursSelect( { value, onChange, max, label, permanent } ) {
 	return (
 		<select
 			className="hdh-input hdh-select"
@@ -35,6 +41,9 @@ function HoursSelect( { value, onChange, max, label } ) {
 					{ hoursLabel( h ) }
 				</option>
 			) ) }
+			{ permanent && (
+				<option value={ PERMANENT }>{ hoursLabel( PERMANENT ) }</option>
+			) }
 		</select>
 	);
 }
@@ -104,6 +113,72 @@ function Categories( { value, onChange } ) {
  * @param {boolean}  props.ratings  Whether ratings are available (Pro).
  * @return {JSX.Element} Editor.
  */
+const RULE_OPTIONS = [
+	{ value: '', label: __( 'As set above', 'helpdesk-hero-hub' ) },
+	{ value: 'ticked', label: __( 'Ask, box ticked', 'helpdesk-hero-hub' ) },
+	{ value: 'unticked', label: __( 'Ask, box unticked', 'helpdesk-hero-hub' ) },
+	{ value: 'required', label: __( 'Comes with the ticket', 'helpdesk-hero-hub' ) },
+	{ value: 'off', label: __( 'Don’t offer access', 'helpdesk-hero-hub' ) },
+];
+
+/**
+ * Access per category and priority: for example "Billing questions: don't offer access",
+ * "Urgent: ask, ticked".
+ *
+ * @param {Object}   props            Props.
+ * @param {Object}   props.rules      { categories: {}, priorities: {} }.
+ * @param {Array}    props.categories The policy's categories.
+ * @param {Function} props.onChange   New rules.
+ * @return {JSX.Element} Setting.
+ */
+function AccessRules( { rules, categories, onChange } ) {
+	const set = ( group, key, value ) => {
+		const next = { ...( rules[ group ] || {} ) };
+		if ( value ) {
+			next[ key ] = value;
+		} else {
+			delete next[ key ];
+		}
+		onChange( { ...rules, [ group ]: next } );
+	};
+	const rows = [
+		...( categories || [] ).map( ( c ) => [ 'categories', c, c ] ),
+		[ 'priorities', 'urgent', __( 'Priority: Urgent', 'helpdesk-hero-hub' ) ],
+		[ 'priorities', 'high', __( 'Priority: High', 'helpdesk-hero-hub' ) ],
+		[ 'priorities', 'normal', __( 'Priority: Normal', 'helpdesk-hero-hub' ) ],
+		[ 'priorities', 'low', __( 'Priority: Low', 'helpdesk-hero-hub' ) ],
+	];
+	return (
+		<Setting
+			title={ __( 'Access by category and priority', 'helpdesk-hero-hub' ) }
+			desc={ __(
+				'Override the setting above for some tickets. A category’s rule wins over a priority’s. Customers always see what applies before they send. Add categories under Tickets below.',
+				'helpdesk-hero-hub'
+			) }
+		>
+			<div className="hdh-stack" style={ { gap: 6, minWidth: 300 } }>
+				{ rows.map( ( [ group, key, label ] ) => (
+					<div key={ `${ group }-${ key }` } className="hdh-assign-row">
+						<span>{ label }</span>
+						<select
+							className="hdh-input hdh-select"
+							aria-label={ label }
+							value={ ( rules[ group ] || {} )[ key ] || '' }
+							onChange={ ( e ) => set( group, key, e.target.value ) }
+						>
+							{ RULE_OPTIONS.map( ( o ) => (
+								<option key={ o.value } value={ o.value }>
+									{ o.label }
+								</option>
+							) ) }
+						</select>
+					</div>
+				) ) }
+			</div>
+		</Setting>
+	);
+}
+
 export default function PolicyEditor( {
 	policy,
 	onChange,
@@ -288,6 +363,7 @@ export default function PolicyEditor( {
 									) }
 									value={ a.default_hours }
 									max={ a.max_hours }
+									permanent={ a.permanent }
 									onChange={ ( v ) =>
 										setA( { default_hours: v } )
 									}
@@ -304,14 +380,44 @@ export default function PolicyEditor( {
 									onChange={ ( v ) =>
 										setA( {
 											max_hours: v,
-											default_hours: Math.min(
-												a.default_hours,
-												v
-											),
+											default_hours:
+												a.default_hours === PERMANENT
+													? PERMANENT
+													: Math.min(
+															a.default_hours,
+															v
+													  ),
 										} )
 									}
 								/>
 							</div>
+						</Setting>
+						<Setting
+							title={ __(
+								'Access with no end date',
+								'helpdesk-hero-hub'
+							) }
+							desc={ __(
+								'Adds “Until I end it” to the lengths customers can choose (and to your default length). It lasts until the customer or your team ends it, even after tickets close; everything is still logged. Useful for sites you’re building or maintain on an ongoing basis. Tip: turn it on in a template for those customers or tiers only.',
+								'helpdesk-hero-hub'
+							) }
+						>
+							<Switch
+								label={ __(
+									'Access with no end date',
+									'helpdesk-hero-hub'
+								) }
+								checked={ !! a.permanent }
+								onChange={ ( v ) =>
+									setA( {
+										permanent: v,
+										default_hours:
+											! v && a.default_hours === PERMANENT
+												? Math.min( 24, a.max_hours )
+												: a.default_hours,
+									} )
+								}
+							/>
 						</Setting>
 						<Setting
 							title={ __(
@@ -479,6 +585,11 @@ export default function PolicyEditor( {
 								}
 							/>
 						</Setting>
+						<AccessRules
+							rules={ a.rules || {} }
+							categories={ t.categories }
+							onChange={ ( rules ) => setA( { rules } ) }
+						/>
 					</>
 				) }
 			</Card>
@@ -619,6 +730,59 @@ export default function PolicyEditor( {
 						checked={ !! ratings && t.ratings }
 						disabled={ ! ratings }
 						onChange={ ( v ) => setT( { ratings: v } ) }
+					/>
+				</Setting>
+			</Card>
+
+			<Card
+				title={ __( 'Pinpoint', 'helpdesk-hero-hub' ) }
+				sub={ __(
+					'“Report a problem” in the customer’s toolbar: they click the broken part of a page (or drag a box around it), and the spot, the page and its errors come with the ticket. You open the page with the spot highlighted.',
+					'helpdesk-hero-hub'
+				) }
+				bodyClass={ null }
+			>
+				<div style={ { padding: '4px 20px 12px' } }>
+					<PinpointDemo />
+				</div>
+				<Setting
+					title={ __( 'Pinpoint on customer sites', 'helpdesk-hero-hub' ) }
+					desc={
+						{
+							customer: __(
+								'Off until the customer turns it on (Get Help › Pinpoint).',
+								'helpdesk-hero-hub'
+							),
+							on: __(
+								'On for every site; customers can turn it off.',
+								'helpdesk-hero-hub'
+							),
+							always: __(
+								'Always on; customers can’t turn it off.',
+								'helpdesk-hero-hub'
+							),
+							off: __(
+								'Not offered.',
+								'helpdesk-hero-hub'
+							),
+						}[ ( policy.pinpoint || {} ).mode || 'customer' ]
+					}
+				>
+					<Segmented
+						label={ __( 'Pinpoint', 'helpdesk-hero-hub' ) }
+						value={ ( policy.pinpoint || {} ).mode || 'customer' }
+						onChange={ ( v ) =>
+							onChange( {
+								...policy,
+								pinpoint: { ...( policy.pinpoint || {} ), mode: v },
+							} )
+						}
+						options={ [
+							{ value: 'customer', label: __( 'Customer decides', 'helpdesk-hero-hub' ) },
+							{ value: 'on', label: __( 'On', 'helpdesk-hero-hub' ) },
+							{ value: 'always', label: __( 'Always on', 'helpdesk-hero-hub' ) },
+							{ value: 'off', label: __( 'Off', 'helpdesk-hero-hub' ) },
+						] }
 					/>
 				</Setting>
 			</Card>

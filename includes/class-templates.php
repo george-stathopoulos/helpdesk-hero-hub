@@ -48,6 +48,14 @@ final class Helpdesk_Hero_Hub_Templates {
 		$full['diagnostics']['changes']       = 'required';
 		$full['diagnostics']['debug_log']     = 'on';
 
+		$care                              = $d;
+		$care['access']['mode']            = 'always';
+		$care['access']['permanent']       = true;
+		$care['access']['default_hours']   = Helpdesk_Hero_Hub_Policy::PERMANENT;
+		$care['access']['end_on_close']    = false;
+		$care['access']['plugin_installs'] = true;
+		$care['pinpoint']['mode']          = 'always';
+
 		return array(
 			array(
 				'id'          => 'standard',
@@ -72,6 +80,12 @@ final class Helpdesk_Hero_Hub_Templates {
 				'name'        => __( 'Full service', 'helpdesk-hero-hub' ),
 				'description' => __( 'Managed sites: access with every ticket, 3 days by default, plugin installs allowed, extensions granted automatically.', 'helpdesk-hero-hub' ),
 				'policy'      => $full,
+			),
+			array(
+				'id'          => 'ongoing-care',
+				'name'        => __( 'Ongoing care', 'helpdesk-hero-hub' ),
+				'description' => __( 'Sites you build or maintain: access with no end date until someone ends it, plugin installs allowed, Pinpoint always on.', 'helpdesk-hero-hub' ),
+				'policy'      => $care,
 			),
 		);
 	}

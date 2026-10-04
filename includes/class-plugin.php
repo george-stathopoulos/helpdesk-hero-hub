@@ -42,7 +42,9 @@ final class Helpdesk_Hero_Hub_Plugin {
 		add_action( 'rest_api_init', array( 'Helpdesk_Hero_Hub_Admin_REST', 'register' ) );
 		Helpdesk_Hero_Hub::init();
 		Helpdesk_Hero_Hub_Admin::init();
+		Helpdesk_Hero_Hub_Connect_Page::init();
 		Helpdesk_Hero_Hub_Privacy::init();
+		Helpdesk_Hero_Hub_Cleanup::init();
 
 		if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			require_once HELPDESK_HERO_HUB_DIR . 'includes/class-cli.php';

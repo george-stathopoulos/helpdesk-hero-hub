@@ -2,9 +2,10 @@ import { __, sprintf } from '@wordpress/i18n';
 import { applyFilters } from '@wordpress/hooks';
 import { useEffect, useMemo, useState } from '@wordpress/element';
 import { useRoute, useTheme } from './ui/lib/hooks';
-import { ToastProvider } from './ui/components/ui';
+import { ToastProvider, ErrorBoundary } from './ui/components/ui';
 import Icon from './ui/components/Icon';
 import LiveUnread from './components/LiveUnread';
+import QuickSwitcher from './components/QuickSwitcher';
 import Overview from './pages/Overview';
 import Inbox from './pages/Inbox';
 import Ticket from './pages/Ticket';
@@ -13,17 +14,14 @@ import Policies from './pages/Policies';
 import Helpdesk from './pages/Helpdesk';
 import Settings from './pages/Settings';
 import Welcome from './pages/Welcome';
+import ConnectSite from './pages/ConnectSite';
 import Feedback from './pages/Feedback';
 
 const boot = window.hdhBoot || {};
 
+// Work first: the Inbox is home. Policies and Help desk live inside Settings (`inSettings`);
+// their old addresses still work.
 const ROUTES = [
-	{
-		id: 'overview',
-		label: __( 'Overview', 'helpdesk-hero-hub' ),
-		icon: 'overview',
-		Page: Overview,
-	},
 	{
 		id: 'inbox',
 		label: __( 'Inbox', 'helpdesk-hero-hub' ),
@@ -37,18 +35,10 @@ const ROUTES = [
 		Page: Sites,
 	},
 	{
-		id: 'policies',
-		label: __( 'Policies', 'helpdesk-hero-hub' ),
-		icon: 'sliders',
-		Page: Policies,
-		admin: true,
-	},
-	{
-		id: 'helpdesk',
-		label: __( 'Help desk', 'helpdesk-hero-hub' ),
-		icon: 'plug',
-		Page: Helpdesk,
-		admin: true,
+		id: 'reports',
+		label: __( 'Reports', 'helpdesk-hero-hub' ),
+		icon: 'chart',
+		Page: Overview,
 	},
 	{
 		id: 'settings',
@@ -57,7 +47,31 @@ const ROUTES = [
 		Page: Settings,
 		admin: true,
 	},
+	{
+		id: 'policies',
+		label: __( 'Policies', 'helpdesk-hero-hub' ),
+		icon: 'sliders',
+		Page: Policies,
+		admin: true,
+		inSettings: true,
+	},
+	{
+		id: 'helpdesk',
+		label: __( 'Help desk', 'helpdesk-hero-hub' ),
+		icon: 'plug',
+		Page: Helpdesk,
+		admin: true,
+		inSettings: true,
+	},
 ];
+
+// Old addresses (bookmarks, emails) and where they live now.
+const ALIASES = {
+	overview: 'reports',
+	analytics: 'reports/analytics',
+	policies: 'settings/policies',
+	helpdesk: 'settings/helpdesk',
+};
 
 const THEMES = [
 	{
@@ -78,7 +92,7 @@ const THEMES = [
 ];
 
 export default function App() {
-	const [ route, go ] = useRoute( 'overview' );
+	const [ route, go ] = useRoute( 'inbox' );
 	const [ theme, setTheme ] = useTheme();
 	const [ unread, setUnread ] = useState( 0 );
 	/**
@@ -91,16 +105,31 @@ export default function App() {
 			),
 		[]
 	);
+	/**
+	 * Filters components shown above every page (Pro: time waiting to be logged).
+	 */
+	const globals = useMemo(
+		() => applyFilters( 'helpdeskHeroHub.globals', [] ),
+		[]
+	);
 	const [ section, param ] = route.split( '/' );
+	useEffect( () => {
+		if ( ALIASES[ section ] ) {
+			go( ALIASES[ section ] + ( param ? '/' + param : '' ) );
+		}
+	}, [ section ] ); // eslint-disable-line react-hooks/exhaustive-deps
+	const nav = routes.filter( ( r ) => ! r.inSettings );
+	const settingsPages = routes.filter( ( r ) => r.inSettings );
 	const hidden = {
 		ticket: { id: 'inbox', Page: Ticket },
 		welcome: { id: 'welcome', Page: Welcome },
+		connect: { id: 'sites', Page: ConnectSite },
 		feedback: { id: 'feedback', Page: Feedback },
 	};
 	const current =
 		hidden[ section ] ||
-		routes.find( ( r ) => r.id === section ) ||
-		routes[ 0 ];
+		nav.find( ( r ) => r.id === section ) ||
+		nav[ 0 ];
 	const { Page } = current;
 
 	// First visit after installing: open the setup guide until it's finished or skipped.
@@ -123,6 +152,7 @@ export default function App() {
 		>
 			<ToastProvider>
 				<LiveUnread onCount={ setUnread } route={ route } />
+				<QuickSwitcher routes={ routes } go={ go } />
 				<header className="hdh-header">
 					<div className="hdh-header__inner">
 						<div className="hdh-brand">
@@ -145,7 +175,7 @@ export default function App() {
 								'helpdesk-hero-hub'
 							) }
 						>
-							{ routes.map( ( r ) => (
+							{ nav.map( ( r ) => (
 								<a
 									key={ r.id }
 									href={ `#/${ r.id }` }
@@ -177,6 +207,30 @@ export default function App() {
 							) ) }
 						</nav>
 						<div className="hdh-header__end">
+							<button
+								type="button"
+								className="hdh-btn is-ghost is-sm hdh-switcher-open"
+								onClick={ () =>
+									window.dispatchEvent(
+										new window.KeyboardEvent( 'keydown', {
+											key: 'k',
+											ctrlKey: true,
+										} )
+									)
+								}
+								title={ __(
+									'Go to a page, site or ticket',
+									'helpdesk-hero-hub'
+								) }
+							>
+								<Icon name="filter" size={ 15 } />
+								{ __( 'Go to…', 'helpdesk-hero-hub' ) }
+								<kbd>
+									{ /Mac|iPhone|iPad/.test( window.navigator.platform || '' )
+										? '⌘K'
+										: 'Ctrl K' }
+								</kbd>
+							</button>
 							<a
 								href="#/feedback"
 								className={ `hdh-btn is-ghost is-sm ${
@@ -207,7 +261,16 @@ export default function App() {
 					</div>
 				</header>
 				<main className="hdh-shell" key={ route }>
-					<Page go={ go } param={ param } />
+					{ globals.map( ( Global, i ) => (
+						<Global key={ i } route={ route } go={ go } />
+					) ) }
+					<ErrorBoundary resetKey={ route }>
+						<Page
+							go={ go }
+							param={ param }
+							pages={ settingsPages }
+						/>
+					</ErrorBoundary>
 				</main>
 				<footer className="hdh-footer">
 					<span>

@@ -230,7 +230,7 @@ export default function Feedback() {
 						size="sm"
 						onClick={ () => {
 							send( 'admin/feedback', 'POST' );
-							window.location.hash = '#/overview';
+							window.location.hash = '#/inbox';
 						} }
 					>
 						{ __( 'Don’t ask me again', 'helpdesk-hero-hub' ) }

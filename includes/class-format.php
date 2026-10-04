@@ -34,6 +34,24 @@ final class Helpdesk_Hero_Hub_Format {
 			$out[] = '';
 		}
 
+		$pins = ! empty( $data['pinpoints'] ) ? (array) $data['pinpoints'] : ( ! empty( $data['pinpoint']['url'] ) ? array( $data['pinpoint'] ) : array() );
+		foreach ( $pins as $n => $pin ) {
+			$out[] = '== Problem spot ' . ( $n + 1 ) . ' (Pinpoint) ==';
+			if ( ! empty( $pin['label'] ) ) {
+				$out[] = 'Note: ' . $pin['label'];
+			}
+			$out[] = 'Page: ' . $pin['title'] . ' — ' . $pin['url'];
+			$out[] = ( 'area' === ( $pin['kind'] ?? '' ) ? 'Area on: ' : 'Element: ' ) . $pin['selector'] . ( '' !== (string) ( $pin['text'] ?? '' ) ? ' (“' . $pin['text'] . '”)' : '' );
+			$out[] = 'Screen: ' . $pin['viewport']['w'] . '×' . $pin['viewport']['h'] . ' · ' . $pin['browser'];
+			foreach ( (array) $pin['errors'] as $e ) {
+				$out[] = 'JS error: ' . $e['message'] . ( '' !== $e['source'] ? ' (' . $e['source'] . ':' . $e['line'] . ')' : '' );
+			}
+			foreach ( (array) $pin['requests'] as $r ) {
+				$out[] = 'Failed request: ' . $r['method'] . ' ' . $r['url'] . ' → ' . ( $r['status'] ? $r['status'] : 'no response' );
+			}
+			$out[] = '';
+		}
+
 		if ( ! empty( $data['environment'] ) ) {
 			$out[] = '== Environment ==';
 			foreach ( $data['environment'] as $key => $value ) {

@@ -25,8 +25,8 @@ final class Helpdesk_Hero_Hub_Backup {
 	 */
 	public static function columns() {
 		return array(
-			'sites'   => array( 'id', 'label', 'name', 'url', 'endpoint', 'contact_email', 'secret', 'status', 'invite_hash', 'invite_expires', 'policy', 'info', 'created_at', 'last_seen' ),
-			'tickets' => array( 'id', 'site_id', 'client_ticket_id', 'subject', 'status', 'priority', 'category', 'customer_name', 'customer_email', 'description', 'diagnostics', 'flags', 'helpdesk', 'helpdesk_id', 'helpdesk_number', 'seen_threads', 'access_expires', 'channel', 'tags', 'rating', 'rating_comment', 'rated_at', 'first_response_at', 'closed_at', 'customer_at', 'viewed_at', 'created_at', 'updated_at', 'synced_at' ),
+			'sites'   => array( 'id', 'label', 'name', 'url', 'endpoint', 'contact_email', 'secret', 'status', 'invite_hash', 'invite_expires', 'policy', 'info', 'tier', 'notes', 'created_at', 'last_seen' ),
+			'tickets' => array( 'id', 'site_id', 'client_ticket_id', 'subject', 'status', 'custom_status', 'service', 'priority', 'health', 'assignee_id', 'merged_into', 'fields', 'respond_due', 'resolve_due', 'sla_paused_at', 'category', 'customer_name', 'customer_email', 'description', 'diagnostics', 'flags', 'helpdesk', 'helpdesk_id', 'helpdesk_number', 'seen_threads', 'access_expires', 'channel', 'tags', 'rating', 'rating_comment', 'rated_at', 'first_response_at', 'closed_at', 'customer_at', 'viewed_at', 'created_at', 'updated_at', 'synced_at' ),
 			'outbox'  => array( 'id', 'site_id', 'hub_ticket_id', 'type', 'payload', 'created_by', 'created_at' ),
 		);
 	}
@@ -43,6 +43,8 @@ final class Helpdesk_Hero_Hub_Backup {
 			Helpdesk_Hero_Hub_Policy::OPTION    => false,
 			Helpdesk_Hero_Hub_Templates::OPTION => false,
 			Helpdesk_Hero_Hub_Tags::OPTION      => false,
+			Helpdesk_Hero_Hub_Tiers::OPTION     => false,
+			Helpdesk_Hero_Hub_Cleanup::OPTION   => false,
 		);
 	}
 
@@ -60,14 +62,25 @@ final class Helpdesk_Hero_Hub_Backup {
 				$options[ $name ] = get_option( $name, null );
 			}
 		}
+		// Secrets are encrypted with this server's keys; the file carries them readable (and the
+		// whole file is then encrypted with a passphrase), so it can be restored anywhere.
+		if ( isset( $options[ Helpdesk_Hero_Hub_Settings::SECRETS ] ) && is_array( $options[ Helpdesk_Hero_Hub_Settings::SECRETS ] ) ) {
+			foreach ( $options[ Helpdesk_Hero_Hub_Settings::SECRETS ] as $key => $value ) {
+				$options[ Helpdesk_Hero_Hub_Settings::SECRETS ][ $key ] = Helpdesk_Hero_Hub_Settings::secret( $key );
+			}
+		}
 		$tables = array();
 		foreach ( self::columns() as $table => $columns ) {
 			$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id ASC', Helpdesk_Hero_Hub_DB::table( $table ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 			foreach ( $rows as &$row ) {
 				$row = array_intersect_key( $row, array_flip( $columns ) );
-				if ( ! $secrets && 'sites' === $table ) {
-					$row['secret']      = '';
-					$row['invite_hash'] = '';
+				if ( 'sites' === $table ) {
+					if ( $secrets ) {
+						$row['secret'] = Helpdesk_Hero_Hub_Crypto::export( Helpdesk_Hero_Hub_Crypto::load( (string) $row['secret'] ) );
+					} else {
+						$row['secret']      = '';
+						$row['invite_hash'] = '';
+					}
 				}
 			}
 			$tables[ $table ] = $rows;
@@ -91,6 +104,44 @@ final class Helpdesk_Hero_Hub_Backup {
 		 * @param bool  $secrets Whether secrets are included.
 		 */
 		return (array) apply_filters( 'helpdesk_hero_hub_backup', $data, (bool) $secrets );
+	}
+
+	/**
+	 * Encrypt a backup with a passphrase.
+	 *
+	 * @param array  $data       Backup.
+	 * @param string $passphrase Passphrase.
+	 * @return array Sealed backup file.
+	 */
+	public static function seal( array $data, $passphrase ) {
+		return array(
+			'format'    => self::FORMAT,
+			'encrypted' => Helpdesk_Hero_Hub_Crypto::seal( (string) wp_json_encode( $data ), $passphrase ),
+			'created'   => $data['created'] ?? gmdate( 'c' ),
+			'secrets'   => ! empty( $data['secrets'] ),
+		);
+	}
+
+	/**
+	 * Open an encrypted backup.
+	 *
+	 * @param array  $file       Backup file.
+	 * @param string $passphrase Passphrase.
+	 * @return array|WP_Error Backup.
+	 */
+	public static function open( array $file, $passphrase ) {
+		if ( empty( $file['encrypted'] ) || ! is_array( $file['encrypted'] ) ) {
+			return $file;
+		}
+		if ( '' === (string) $passphrase ) {
+			return new WP_Error( 'helpdesk_hero_hub_passphrase', __( 'This backup is encrypted. Enter its passphrase.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
+		}
+		$json = Helpdesk_Hero_Hub_Crypto::unseal( $file['encrypted'], $passphrase );
+		$data = false !== $json ? json_decode( $json, true ) : null;
+		if ( ! is_array( $data ) ) {
+			return new WP_Error( 'helpdesk_hero_hub_passphrase', __( 'Wrong passphrase, or the file is damaged.', 'helpdesk-hero-hub' ), array( 'status' => 400 ) );
+		}
+		return $data;
 	}
 
 	/**
@@ -122,6 +173,10 @@ final class Helpdesk_Hero_Hub_Backup {
 				foreach ( $row as $key => $value ) {
 					// Values are stored as they were exported: strings, numbers or NULL.
 					$row[ $key ] = null === $value ? null : ( is_scalar( $value ) ? (string) $value : wp_json_encode( $value ) );
+				}
+				if ( 'sites' === $table && ! empty( $row['secret'] ) ) {
+					// Keys arrive readable (or encrypted by an older version); store them encrypted here.
+					$row['secret'] = Helpdesk_Hero_Hub_Crypto::store( Helpdesk_Hero_Hub_Crypto::load( (string) $row['secret'] ) );
 				}
 				if ( false !== $wpdb->insert( $name, $row ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
 					++$counts[ $table ];
@@ -173,7 +228,20 @@ final class Helpdesk_Hero_Hub_Backup {
 			case Helpdesk_Hero_Hub_Settings::OPTION:
 				return array_intersect_key( array_map( 'sanitize_text_field', array_filter( (array) $value, 'is_scalar' ) ), Helpdesk_Hero_Hub_Settings::defaults() );
 			case Helpdesk_Hero_Hub_Settings::SECRETS:
-				return array_map( 'strval', array_filter( (array) $value, 'is_scalar' ) );
+				return array_map(
+					static function ( $secret ) {
+						$plain = Helpdesk_Hero_Hub_Crypto::decrypt( (string) $secret );
+						return false === $plain ? '' : Helpdesk_Hero_Hub_Crypto::encrypt( $plain );
+					},
+					array_filter( (array) $value, 'is_scalar' )
+				);
+			case Helpdesk_Hero_Hub_Cleanup::OPTION:
+				return array(
+					'auto'   => ! empty( $value['auto'] ),
+					'months' => max( 1, min( 120, (int) ( $value['months'] ?? 12 ) ) ),
+				);
+			case Helpdesk_Hero_Hub_Tiers::OPTION:
+				return Helpdesk_Hero_Hub_Tiers::sanitize( (array) $value );
 			case Helpdesk_Hero_Hub_Templates::OPTION:
 				$list = array();
 				foreach ( (array) $value as $tpl ) {

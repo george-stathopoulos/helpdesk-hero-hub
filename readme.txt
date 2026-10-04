@@ -4,7 +4,7 @@ Tags: support, helpdesk, tickets, client sites, remote access
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.0.0
+Stable tag: 2.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,20 @@ Their sites can no longer send tickets to you, and you can no longer log in. The
 6. Settings and ticket tags.
 
 == Changelog ==
+
+= 2.1.0 =
+* Pinpoint: customers point at the problem on the page; tickets and replies show the problem spots, and you open the page with each spot highlighted. Your policy decides whether customers choose, or Pinpoint is on or always on.
+* Connect a site: connection links that take customers straight to Connect, with live status; the setup guide ends with it.
+* Work-first menu: Inbox first, My work shortcuts, a Ctrl/Cmd+K quick switcher and g-key shortcuts.
+* A compact Inbox: filters panel, filter chips, status tabs with counts, and new filters.
+* Assignment, internal notes, bulk actions and bookmarks; optionally, unassigned tickets are assigned to you when you reply.
+* Sorting, pages, site search and editing, customer tiers.
+* Access rules per category and priority, tier templates, and access with no end date (Ongoing care template).
+* One support access per site, shared by open tickets; you can end access yourself, and the hub shows whether the site got it.
+* A note on the ticket when access ends because the customer deleted a support account.
+* Ticket side panels fold open and shut.
+* Light text formatting in messages, kept as plain text so emails and help desks stay readable.
+* Security: Ed25519 key pairs (upgraded automatically), keys encrypted at rest, key rotation, encrypted backups, login link rate limits.
 
 = 2.0.0 =
 * First release as a separate plugin, with support policies.
