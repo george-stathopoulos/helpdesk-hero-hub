@@ -4,7 +4,7 @@ Tags: support, helpdesk, tickets, client sites, remote access
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.1.0
+Stable tag: 2.2.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,9 @@ Their sites can no longer send tickets to you, and you can no longer log in. The
 6. Settings and ticket tags.
 
 == Changelog ==
+
+= 2.2.0 =
+* Support console on customer sites: after Log in, you land on a console with the site's tickets (conversation and problem spots, with Open and highlight), site details, the debug log, caught errors, scheduled tasks and troubleshooting mode. Reply in the hub takes you straight back to the ticket. Needs Helpdesk Hero 2.2.0 on the customer's site.
 
 = 2.1.0 =
 * Pinpoint: customers point at the problem on the page; tickets and replies show the problem spots, and you open the page with each spot highlighted. Your policy decides whether customers choose, or Pinpoint is on or always on.

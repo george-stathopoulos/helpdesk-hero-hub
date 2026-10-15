@@ -3,7 +3,7 @@
  * Plugin Name:       Helpdesk Hero Hub
  * Plugin URI:        https://wordpress.org/plugins/helpdesk-hero-hub/
  * Description:       Support hub for agencies and plugin vendors: connect your customers' WordPress sites, receive their tickets with diagnostics in Help Scout or Zendesk, set the support policy, and log in to their sites with one-time links.
- * Version:           2.1.0
+ * Version:           2.2.0
  * Requires at least: 6.5
  * Requires PHP:      7.4
  * Author:            George Stathopoulos
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'HELPDESK_HERO_HUB_VERSION', '2.1.0' );
+define( 'HELPDESK_HERO_HUB_VERSION', '2.2.0' );
 define( 'HELPDESK_HERO_HUB_FILE', __FILE__ );
 define( 'HELPDESK_HERO_HUB_DIR', plugin_dir_path( __FILE__ ) );
 define( 'HELPDESK_HERO_HUB_URL', plugin_dir_url( __FILE__ ) );
